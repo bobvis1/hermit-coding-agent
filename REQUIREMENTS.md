@@ -20,6 +20,8 @@ Manual approval has the same weakness. Safety ends up depending on the developer
 
 If a developer uses a consumer product with no data processing agreement, it circumvents all of the organizations security requirements. Convenience, usability and usefulness to developers are thus security requirements. The tool should be competitive with tools a developer might encounter when working on less sensitive systems.
 
+A developer determined to go around the tool can always find a way. The realistic aim is that going around it is unattractive, because the sanctioned tool is good, and visible, because server-side controls (the model gateway in M16 and the log checks in M15) record it.
+
 ## 3. Design principles
 
 1. **Capabilities by construction.** The agent can do only what the harness offers as a named, structured action. There is no general shell to restrict, because there is no shell.
@@ -53,8 +55,24 @@ If a developer uses a consumer product with no data processing agreement, it cir
 | Side door through CI | Agent-written code reads CI secrets or calls the network when the pipeline runs | Protected paths; no protected variables or deployment credentials on agent branches; restricted runners |
 | Supply chain | Agent adds a malicious or typo-squatted dependency | Agent cannot edit dependency manifests; it discusses trade-offs with the developer who decides and types |
 | Human rubber-stamping | Developer commits everything unread near a deadline | A careless commit reaches only a branch and an MR that another human reviews, not the developer's machine or other systems |
+| Credential reuse in other tools | Developer copies the model API key or Bedrock credentials from their machine and points an unrestricted agent at it | Organization model gateway: provider keys never reach laptops, short-lived SSO tokens, device certificates, request-shape checks, central logging and a kill switch (M16); without a gateway, cross-checks of provider records against Hermit's logs (M15) |
+| Log tampering by the developer | Developer deletes the end of the local log before upload, or edits it | Hash chain; chain head anchored off the machine as the session runs; cross-checks against gateway or provider records (M15); Object Lock after upload |
+| Policy bypass on the endpoint | Developer removes or corrupts the policy file to get unmanaged mode, or uses admin rights to change it | Fail closed on managed devices and on a broken policy (M17); developers are not local administrators (P8) |
 
 There is no reliable mitigation to developers not reviewing code. Developers must take responsibility for the MRs they author and the MRs they approve.
+
+### Outside this threat model
+
+These are real threats, but this tool does not try to defend against them. Each needs other controls, which the organization should already have.
+
+- **A developer who wants to leak data.** Someone determined can copy code by hand, photograph a screen or paste it into a consumer chatbot. The tool makes going around it visible (Goal 2), not impossible.
+- **A developer with local admin rights working against the controls.** With admin rights, every local control can be undone (P8). Server-side controls make this visible but cannot prevent it.
+- **A compromised developer machine.** Malware running as the developer can read anything the developer can, including credentials in the operating system's credential store. Endpoint protection, patching and disk encryption are the organization's responsibility.
+- **A compromised model provider, gateway, source control host or CI system.** The tool trusts these services to do what they claim. Their security falls under the organization's vendor and infrastructure controls, and the provider's data handling under its agreements (P4).
+- **Reviewers who approve without reading, or collude.** MR review (P3) is the last human check. If it fails, this tool cannot replace it.
+- **A compromised Hermit release.** Signed, reproducible builds and organization signing (M17) reduce this risk; the organization's software intake process covers the rest.
+- **Physical theft of a device.** Covered by the organization's device policies, such as disk encryption and remote wipe.
+- **Persuasive but wrong explanations.** The model can explain wrong code convincingly. Small phases (M4), review in the IDE (M5) and MR review reduce this, but no tool can guarantee that a reviewer isn't persuaded.
 
 ## 6. Tasks in scope
 
@@ -125,7 +143,7 @@ The agent never commits or pushes. The developer does both.
 - **Audit only:** actions, refusals, approvals, file paths and content hashes, without conversation text or file contents.
 - **None**
 
-Logs are written locally first, to a file only the developer's account can read, and can be uploaded to central storage (M15).
+Logs are written locally first, to a file only the developer's account can read, and can be uploaded to central storage (M15). A local log alone can be edited or cut short by the developer; anchoring and server-side cross-checks (M15) make that detectable.
 
 **M10. Competitive on the core loop.** For plan → diffs → tests → MR → revise, the tool is capable enough that developers don't want to switch to an unrestricted product.
 
@@ -150,7 +168,8 @@ The policy covers at least:
 | Phase size warning | Set during the pilot | A size measure (changed lines and files) standing in for about one hour of review. The harness warns above it, never refuses (M4) |
 | Log content | Full transcripts | Or audit only (M9) |
 | Log destination | Local only | Or Amazon S3 (M15) |
-| Model provider | None; must be set | Claude API, Amazon Bedrock or OpenAI-compatible (M16), plus the approved models |
+| Model provider | None; must be set | Claude API, Amazon Bedrock, OpenAI-compatible, or an organization gateway (M16), plus the approved models. A gateway is recommended for production |
+| Managed-device marker | None | MDM marker that makes a missing policy stop the harness (M17). Organization builds have it built in |
 | Minimum harness version | None | Older versions refuse to run (M17) |
 | Protected and unreadable paths | The defaults in M7 and M12 | The organization can add to them |
 | Readable git-ignored folders | None | Exceptions to M12's ignored-file rule, such as dependency folders. Organization only |
@@ -183,6 +202,8 @@ Developers run agent-written tests before or after reviewing them, as they would
 - **Batched upload.** The harness appends events to the local log (M9) and uploads compressed chunks every few minutes and at session end. Failed uploads stay queued locally and are retried, including at the next start.
 - **Write-only, short-lived credentials.** Developers sign in through IAM Identity Center. The role can only call `s3:PutObject` under that developer's own prefix. It has no read, list or delete permission, and there are no long-lived access keys. The harness holds the credentials, and the agent cannot use them because it has no shell.
 - **Tamper evidence.** Each event includes a hash of the previous one, so gaps and edits are detectable. The bucket uses versioning and S3 Object Lock in compliance mode, so no one, including administrators, can delete or overwrite logs during the retention period set in M13.
+- **Anchored chain head.** A hash chain cannot show that its end was cut off: a developer could delete the last part of the local log before it is uploaded. So the harness records the session ID, event number and current chain hash off the machine as it goes. With a gateway (M16), it sends them with every model request and the gateway records them. Without one, it uploads them to S3 as a small separate object about every minute. The uploaded log must reach at least the last anchored point, or the gap is reported.
+- **Cross-checks against server-side records.** Scheduled checks compare Hermit's sessions with records the developer cannot alter: the gateway's request log, or without a gateway the provider's own records (Bedrock model invocation logs and CloudTrail, or usage per API key in the provider's console). Model usage with no matching Hermit session, and sessions whose logs stop short of their anchor, raise an alert.
 - **Encryption and access.** SSE-KMS with a dedicated key. The bucket policy rejects non-TLS requests and unencrypted uploads, and Block Public Access is on. Full transcripts go under a separate prefix with their own KMS key and tighter decryption access than audit events.
 - **Querying.** Logs are partitioned by date for querying with Athena, which costs nothing until someone runs a query.
 - **Cost.** Storage cost is small. A rough estimate for 50 developers, a few sessions a day and a couple of megabytes per transcript is about 15 GB a year compressed, or under 100 GB over five years. Lifecycle rules can move older logs to a Glacier storage class, and Object Lock still applies there. The real decision is how long to keep sensitive transcripts, which is why audit events and transcripts have separate retention settings (M13).
@@ -197,6 +218,13 @@ Supported providers:
 - **Claude API (Must).** A key per user or team, stored in the operating system's credential store (macOS Keychain, Windows Credential Manager, libsecret on Linux), never in an environment variable or a file in the repository. Console workspaces provide usage tracking, spending limits and key revocation.
 - **Amazon Bedrock (Must).** Short-lived credentials from IAM Identity Center, for a role that can only call `bedrock:InvokeModel*` on the approved models. Usage falls under the organization's AWS agreement and is recorded in CloudTrail. When logs also go to S3 (M15), one sign-in can cover both, through a single role that can only invoke the approved models and write logs. Bedrock also hosts other vendors' models, which the same adapter can reach through Bedrock's Converse API.
 - **OpenAI API and OpenAI-compatible endpoints including local ones (Must).** An API key stored as for the Claude API. The same adapter covers self-hosted open-weight models served behind an OpenAI-compatible endpoint (for example vLLM), for organizations that require inference to stay on their own infrastructure. Agentic coding is sensitive to model quality, so such models must pass the same evaluation.
+- **Organization model gateway (Must support; recommended for production).** An organization-run proxy between developers and the model provider, reached through the Anthropic-compatible or OpenAI-compatible adapter. Developers authenticate to it with SSO and receive short-lived tokens; the provider keys stay on the gateway and never reach a laptop. Because it sits on the server, it applies to every request whichever client sent it:
+  - central logging, content scanning, usage limits, and a kill switch for a user, a team or everyone;
+  - optional device certificates issued by MDM, so only managed machines can connect;
+  - a check that each request declares Hermit's fixed set of tools and no others, such as a shell tool. This stops casually pointing another agent at the gateway, but is not proof, because a determined developer can imitate Hermit's requests;
+  - recording the log chain head that the harness sends with each request (M15).
+
+**Why the gateway matters.** A raw Claude or OpenAI key in the developer's credential store, or Bedrock role credentials, works in any tool. A developer can point an unrestricted agent at it, under the organization's own data agreement and invisible to the organization: exactly the circumvention Goal 2 worries about. Raw keys and direct Bedrock credentials remain acceptable for pilots and lower-risk settings, with this risk accepted. Without a gateway, provider-side records are cross-checked against Hermit's logs (M15).
 
 Choosing a provider is configuration, not a separate implementation.
 
@@ -208,7 +236,8 @@ Choosing a provider is configuration, not a separate implementation.
 - **Standard packages.** A signed and notarized `.pkg` for macOS (Jamf, Intune, Kandji), a signed MSI for Windows (Intune, Configuration Manager), and `.deb` and `.rpm` packages for Linux (package repository, Ansible, Puppet). Homebrew and winget packages for individuals evaluating it.
 - **Policy in a fixed system location.** macOS: a managed preferences domain delivered as an MDM configuration profile, or `/Library/Application Support/Hermit/policy.json`. Windows: `HKLM\SOFTWARE\Policies\Hermit` (Group Policy or Intune, with an ADMX template), or `C:\ProgramData\Hermit\policy.json`. Linux: `/etc/hermit/policy.json`.
 - **Refuse a writable policy.** The harness will not start if the developer's account can modify the policy file, because then the developer could change it. Signing the policy is not required in version 1: file permissions and managed delivery stop developers from changing it, and signing would only guard against administrators, who could replace the executable anyway. It remains a possible later hardening step.
-- **Unmanaged mode.** With no system policy, the harness runs on the developer's own settings and shows a clear "unmanaged" banner. The guarantees in this document hold only for managed installs.
+- **Fail closed.** A policy that is present but unreadable, malformed or invalid always stops the harness; it never falls back to weaker settings. On a managed device, a missing policy also stops it. The harness treats a device as managed if either the executable is an organization build with "managed" set at build time, or an MDM marker exists (a managed-preferences domain on macOS, or a policy registry key on Windows, written only by device management).
+- **Unmanaged mode.** Only when there is no policy and no sign that the device is managed does the harness run on the developer's own settings, with a clear "unmanaged" banner. The guarantees in this document hold only for managed installs.
 - **Organization-controlled updates.** The harness never updates itself. Organizations push new versions through the same channel as installs, and the policy can set a minimum version below which the harness refuses to run.
 - **Build from source.** Builds are reproducible from a documented command. Releases include checksums, an SBOM and signed build provenance, and the signing step is documented so organizations can sign their own builds.
 
@@ -284,6 +313,7 @@ These aren't features of the tool, but the design depends on them:
 - **P5.** If logs go to S3 or the model provider is Bedrock: an AWS account with IAM Identity Center, the log bucket and KMS keys set up as in M15, Bedrock model access enabled for the approved models, and a role limited to those permissions.
 - **P6.** Repositories write JUnit XML test reports from their build tool (M14).
 - **P7.** Restricted and regulated data, and real credentials, are kept out of source repositories, including test fixtures and saved notebook output. File rules (M12) and content scanning (M18) are a backstop for mistakes, not a substitute.
+- **P8.** Developers are not local administrators on the machines where the harness runs. The local controls (a policy the developer cannot change, protected files, the local log before upload) hold only for developers without admin rights. Where developers are administrators, those controls depend on the developer's good faith, and the server-side controls (the model gateway in M16 and the log checks in M15) are what remain.
 
 ## 9. Success measures
 
@@ -330,10 +360,11 @@ What each party provides to get the tool running. Nothing in the organization or
 
 | Setting | Contents |
 |---|---|
-| Model provider | Claude API, Amazon Bedrock, or OpenAI-compatible (M16) |
+| Model provider | Claude API, Amazon Bedrock, OpenAI-compatible, or an organization gateway (recommended for production) (M16) |
 | Approved models | Model IDs the harness may use |
 | Provider endpoint | Bedrock region, or the base URL of an OpenAI-compatible or proxied endpoint |
-| Model credential method | Claude API or OpenAI: developers enter a key issued to them. Bedrock: IAM Identity Center start URL, sign-in region, account ID and role name |
+| Model credential method | Gateway: the SSO sign-in details for short-lived tokens, and optionally the device certificate to present. Claude API or OpenAI: developers enter a key issued to them. Bedrock: IAM Identity Center start URL, sign-in region, account ID and role name |
+| Managed-device marker | How the harness recognizes a managed device, if not an organization build (M17) |
 | Source control host | URL and type (GitLab, GitHub, Bitbucket) |
 | Source control credential method | An OAuth application ID, where the host supports device sign-in. Otherwise a personal access token with the narrowest scope that can read the repository and open MRs |
 
@@ -372,7 +403,7 @@ What each party provides to get the tool running. Nothing in the organization or
 ### Developer (once, at first run)
 
 - Sign in to the source control host.
-- Sign in through IAM Identity Center, or enter the model API key issued to them.
+- Sign in to the model gateway or through IAM Identity Center, or enter the model API key issued to them.
 
 The harness stores these in the operating system's credential store, never in a file. `hermit doctor` (S3) checks the result.
 
