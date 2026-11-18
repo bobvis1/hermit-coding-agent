@@ -88,6 +88,7 @@ The agent never commits or pushes. The developer does both.
 - refuses a patch to any file that changed after the agent last read it, and has the agent re-read it first, so a developer's newer edits are never overwritten.
 
 **M4. Plan first, small phases.** The developer approves a phased plan before any code changes. The agent keeps each phase small enough for the developer to review and commit on its own, and splits larger phases. The harness reports which plan step each set of changes implements.
+- **Guidance, not a hard limit.** The model is instructed to aim for phases of a few hundred changed lines across a handful of files. The harness reports each phase's size and warns, but does not refuse, when a phase exceeds a threshold set in organization policy. A hard limit would block legitimate changes such as renames and generated code. Starting values are tuned during the pilot.
 
 **M5. Review in the IDE; the developer commits.** The agent's changes appear in the working tree, so developers review them with their IDE's own diff and source-control views and can edit them directly. Committing is the approval. The harness never commits.
 
@@ -112,7 +113,7 @@ Logs are written locally first, to a file only the developer's account can read,
 
 **M10. Competitive on the core loop.** For plan → diffs → tests → MR → revise, the tool is capable enough that developers don't want to switch to an unrestricted product.
 
-**M11. Terminal interface.** The conversation happens in a terminal, so it works alongside any IDE. No IDE plugin is required.
+**M11. Terminal interface.** The conversation happens in a terminal, so it works alongside any IDE. No IDE plugin is required. Developers can run it in the IDE's own terminal (Eclipse's Terminal view, VS Code's integrated terminal) to keep everything in one window.
 
 **M12. Files the agent cannot read.** Anything the agent reads is sent to the model API, so the harness refuses to read files that must never leave the developer's machine. The default list covers `.env*`, private keys and certificates (`*.pem`, `*.key`, `id_*`), and credential files. Each repository can add to it, for example data directories that hold restricted or regulated data, in `.agentignore` (M7). Search results never include these files' contents.
 
@@ -124,7 +125,9 @@ The policy covers at least:
 
 | Setting | Default | Notes |
 |---|---|---|
-| **Log retention** | **5 years** | **Review this before the first production upload.** S3 Object Lock in compliance mode cannot shorten retention for logs already written (M15). |
+| **Log retention: audit events** | **5 years** | **Review this before the first production upload.** S3 Object Lock in compliance mode cannot shorten retention for logs already written (M15). |
+| **Log retention: transcripts** | **5 years** | **Review this too.** Transcripts contain code and possibly data, so organizations may keep them for less time than audit events. Same Object Lock caution. |
+| Phase size warning | A few hundred changed lines | The harness warns above this, never refuses (M4) |
 | Log content | Full transcripts | Or audit only (M9) |
 | Log destination | Local only | Or Amazon S3 (M15) |
 | Model provider | None; must be set | Claude API, Amazon Bedrock or OpenAI-compatible (M16), plus the approved models |
@@ -145,7 +148,9 @@ The policy covers at least:
 - **Read-only.** The agent cannot write to the results path, so results in the log always come from a real run.
 - **Output reaches the model.** Failure messages are sent to the model API, so tests must not print restricted data. M12 applies to the results path, and full-transcript logs (M9) record what the model saw.
 
-IDE test runners (Eclipse's JUnit view, VS Code's Test Explorer) usually show results only in their own interface and don't write these reports. Developers need to run tests through the build tool, from the terminal or the IDE's build-tool integration, for the agent to see results.
+IDE test runners (Eclipse's JUnit view, VS Code's Test Explorer) usually show results only in their own interface and don't write these reports. Developers need to run tests through the build tool, from the terminal or the IDE's build-tool integration, for the agent to see results. Running Maven or Gradle tests from the IDE (Eclipse's m2e and Buildship, VS Code's Java extensions) writes the reports, and Eclipse's JUnit view can export a test run to XML.
+
+**Without reports.** When there are no reports to read, the agent still works: it reads CI results through the source control host (M1), and the developer can paste a failure into the conversation. If the agent judges that the repository should write test reports or have CI, it drafts the change as a suggestion, as for dependencies (M8), and the developer applies it, since those files are protected (M7).
 
 Developers run agent-written tests before or after reviewing them, as they would a colleague's branch. Guidance to developers is to review agent changes before running them, as before committing them, not to avoid running tests.
 
@@ -155,6 +160,7 @@ Developers run agent-written tests before or after reviewing them, as they would
 - **Tamper evidence.** Each event includes a hash of the previous one, so gaps and edits are detectable. The bucket uses versioning and S3 Object Lock in compliance mode, so no one, including administrators, can delete or overwrite logs during the retention period set in M13.
 - **Encryption and access.** SSE-KMS with a dedicated key. The bucket policy rejects non-TLS requests and unencrypted uploads, and Block Public Access is on. Full transcripts go under a separate prefix with their own KMS key and tighter decryption access than audit events.
 - **Querying.** Logs are partitioned by date for querying with Athena, which costs nothing until someone runs a query.
+- **Cost.** Storage cost is small. A rough estimate for 50 developers, a few sessions a day and a couple of megabytes per transcript is about 15 GB a year compressed, or under 100 GB over five years. Lifecycle rules can move older logs to a Glacier storage class, and Object Lock still applies there. The real decision is how long to keep sensitive transcripts, which is why audit events and transcripts have separate retention settings (M13).
 - **Optional upgrades.** Kinesis Data Firehose in front of S3 for near-real-time delivery or very large volumes, and CloudWatch Logs for alerting (for example, on repeated protected-path refusals).
 
 **M16. Model providers.** The harness owns the agent loop and every tool. It talks to models through a small provider interface, whose adapters only translate messages, tool definitions, tool calls and tool results. Every rule in this document is enforced in the harness, so it applies the same way whichever model is used. Organization policy selects a provider and lists the approved models.
@@ -173,14 +179,14 @@ Choosing a provider is configuration, not a separate implementation.
 - **One executable, no runtime.** The harness is written in Go and built as a single executable for each operating system and processor type. The only other requirement on developer machines is `git`.
 - **Standard packages.** A signed and notarized `.pkg` for macOS (Jamf, Intune, Kandji), a signed MSI for Windows (Intune, Configuration Manager), and `.deb` and `.rpm` packages for Linux (package repository, Ansible, Puppet). Homebrew and winget packages for individuals evaluating it.
 - **Policy in a fixed system location.** macOS: a managed preferences domain delivered as an MDM configuration profile, or `/Library/Application Support/Hermit/policy.json`. Windows: `HKLM\SOFTWARE\Policies\Hermit` (Group Policy or Intune, with an ADMX template), or `C:\ProgramData\Hermit\policy.json`. Linux: `/etc/hermit/policy.json`.
-- **Refuse a writable policy.** The harness will not start if the developer's account can modify the policy file, because then the developer could change it.
+- **Refuse a writable policy.** The harness will not start if the developer's account can modify the policy file, because then the developer could change it. Signing the policy is not required in version 1: file permissions and managed delivery stop developers from changing it, and signing would only guard against administrators, who could replace the executable anyway. It remains a possible later hardening step.
 - **Unmanaged mode.** With no system policy, the harness runs on the developer's own settings and shows a clear "unmanaged" banner. The guarantees in this document hold only for managed installs.
 - **Organization-controlled updates.** The harness never updates itself. Organizations push new versions through the same channel as installs, and the policy can set a minimum version below which the harness refuses to run.
 - **Build from source.** Builds are reproducible from a documented command. Releases include checksums, an SBOM and signed build provenance, and the signing step is documented so organizations can sign their own builds.
 
 ### Should
 
-**S1. Commands in prose.** The model is instructed (but not forced) to describe goals rather than write commands for the developer to run. If the model suggests shell commands, the harness flags them as unverified. 
+**S1. Commands in prose.** The model is instructed (but not forced) to describe goals rather than write commands for the developer to run. If the model suggests shell commands, the harness flags them as unverified. Detection covers fenced code blocks marked as shell and lines that start with a shell prompt such as `$`, which is reliable. The harness shows them with a label ("unverified command from the model: read before running") and no copy button. Commands buried in a sentence are harder to detect, which is why the model is also instructed not to write them.
 
 **S2. Guided MR review** (task 6).
 
@@ -234,16 +240,23 @@ To be agreed with leadership before a pilot:
 
 ## 11. Open questions
 
-1. **Policy signing:** whether, beyond file permissions (M17), the harness should verify that the policy file is signed by the organization.
-2. **Approved models:** which models to allow for each provider, what score on the evaluation suite (M16) a model needs, and whether the policy should allow a cheaper model for simple steps.
-3. **Source control host credentials:** a per-user token (MRs attributed to the developer) or a project token; how the harness obtains and stores it.
-4. **Phase size:** what counts as small enough to review and commit, and whether it is set per repository.
-5. **Repositories without test reports or CI:** what the agent does when there are no JUnit reports to read, and whether it should help the developer set them up (the configuration files are protected, so the developer would make the change).
-6. **Log volume:** expected size and cost of full-transcript logs over five years, and whether audit events need a longer retention than transcripts.
-7. **Detecting commands in prose (S1):** how reliable detection can be, and what the developer sees.
-8. **Eclipse users:** whether a terminal plus Eclipse's Git views is comfortable enough in practice.
-9. **IDE test runners:** whether developers will run tests through the build tool so reports are written (M14), or whether the harness needs another way to collect IDE results.
-10. **Containers on Windows and macOS (only if C2 is built):** performance of mounted repositories, and licensing (Docker Desktop requires a paid subscription for larger organizations; Podman does not).
+### To answer in the pilot
+
+1. **Eclipse users:** whether running the harness in Eclipse's Terminal view, alongside its Git views, is comfortable enough in practice (M11).
+2. **IDE test runners:** how often developers run tests in ways that don't write reports, and whether pasting failures into the conversation is an acceptable fallback (M14).
+3. **Phase size:** the starting warning threshold and model guidance (M4).
+
+### For each organization to decide
+
+4. **Approved models:** which models to allow for each provider, and what score on the evaluation suite (M16) a model needs. Version 1 uses one model per session; a cheaper model for simple steps can be added later if cost warrants it.
+
+### Only if C2 is built
+
+5. **Containers on Windows and macOS:** performance of mounted repositories, and licensing (Docker Desktop requires a paid subscription for larger organizations; Podman does not).
+
+### Later hardening
+
+6. **Policy signing:** verifying that the policy file is signed by the organization, beyond file permissions and managed delivery (M17).
 
 ## 12. Configuration reference
 
@@ -273,7 +286,9 @@ What each party provides to get the tool running. Nothing in the organization or
 
 | Setting | Default |
 |---|---|
-| **Log retention** | **5 years** |
+| **Log retention: audit events** | **5 years** |
+| **Log retention: transcripts** | **5 years** |
+| Phase size warning | A few hundred changed lines |
 | Log content | Full transcripts |
 | Log destination | Local. For S3: bucket, region, KMS key ARNs for audit events and for transcripts, and the upload role |
 | Extra protected and unreadable paths | None beyond M7 and M12 |
@@ -324,7 +339,7 @@ Illustrative only; the final format is settled during implementation. This examp
     "extra_ca_certificates": ["/etc/hermit/example-root-ca.pem"]
   },
   "logging": {
-    "retention_years": 5,
+    "retention_years": { "audit_events": 5, "transcripts": 5 },
     "content": "full_transcripts",
     "destination": "s3",
     "s3": {
