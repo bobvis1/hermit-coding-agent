@@ -42,6 +42,7 @@ If a developer uses a consumer product with no data processing agreement, it cir
 | Honest model mistake | Deletes the wrong code, misreads requirements | Plan approval, small phases reviewed before the developer commits, MR review |
 | Prompt injection | Text in the repository or a dependency instructs the agent | No shell, no network, no credentials; fixed actions only; protected paths |
 | Data exfiltration | Agent sends code or secrets somewhere | No network access for the agent; only outbound channels are the model API, the organization's source control host and its log storage, all used by the harness, not the agent; files that must never reach the model API cannot be read (M12). Note: logging is an exfiltration risk, but can be turned off |
+| Sensitive content in ordinary files | A token in `config/local.yml`, personal data in a test fixture or saved notebook output, a secret in a test failure message | Git-ignored files unreadable by default (M12); scanning of everything sent to the model and everything written (M18); restricted data kept out of repositories (P7) |
 | Local execution of agent-written files | Agent writes a git hook, IDE task or `.envrc` that runs on the developer's machine with their credentials | These paths are protected from edits by the model (M7), including everything under `.git/` |
 | Local execution of agent-written tests | A test or its setup code reads credentials or calls the network when the developer runs it | The agent's changes are shown separately for review (M3) before the developer runs them |
 | Reaching other systems | Agent queries a database or calls an internal service | No shell and no credentials, so no capability to do it |
@@ -75,7 +76,7 @@ There is no reliable mitigation to developers not reviewing code. Developers mus
 **M1. Capabilities.** The agent can only:
 - read and search files in the repository, except the paths in M12;
 - create, edit and delete files in the repository's working tree without asking, except the paths in M7;
-- read MR comments and CI pipeline results;
+- read MR comments, and test summaries and failure messages from CI pipelines (not full job logs, which often contain secrets);
 - write an MR description, and open or update an MR on the organization's source control host for a branch the developer has pushed;
 - read the latest test results from the developer's test runs (M14).
 
@@ -117,6 +118,10 @@ Logs are written locally first, to a file only the developer's account can read,
 **M11. Terminal interface.** The conversation happens in a terminal, so it works alongside any IDE. No IDE plugin is required. Developers can run it in the IDE's own terminal (Eclipse's Terminal view, VS Code's integrated terminal) to keep everything in one window.
 
 **M12. Files the agent cannot read.** Anything the agent reads is sent to the model API, so the harness refuses to read files that must never leave the developer's machine. The default list covers `.env*`, private keys and certificates (`*.pem`, `*.key`, `id_*`), and credential files. Each repository can add to it, for example data directories that hold restricted or regulated data, in `.agentignore` (M7). Search results never include these files' contents.
+- **Files git ignores are unreadable by default.** Ignored files are mostly local configuration, data dumps and build output, where sensitive content collects. The test results path (M14) is the exception. Organization policy, and only organization policy, can allow named ignored folders, such as dependency directories (`node_modules/`, `.venv/`, `vendor/`) whose library source helps the agent. Repositories cannot, because this loosens a restriction.
+- **Names are hidden too.** A file name can itself be data, such as `data/patients/<name>.csv`. Unreadable files don't appear in listings, search results or the change summaries the model sees. A request for one by name gets a generic "not available" that doesn't confirm whether it exists. The developer's audit log (M9) still records the refusal.
+
+Reading by file name is coarse: sensitive content also turns up in test fixtures, notebooks with saved output, local config files and test failures. Content scanning (M18) covers what file rules miss.
 
 **M13. Organization policy.** The organization delivers a policy file through its usual software and configuration distribution. Developers cannot change it, and it overrides developer and repository settings. Repository configuration (such as `.agentignore`) can only add restrictions, never remove them.
 
@@ -128,15 +133,16 @@ The policy covers at least:
 |---|---|---|
 | **Log retention: audit events** | **5 years** | **Review this before the first production upload.** S3 Object Lock in compliance mode cannot shorten retention for logs already written (M15). |
 | **Log retention: transcripts** | **5 years** | **Review this too.** Transcripts contain code and possibly data, so organizations may keep them for less time than audit events. Same Object Lock caution. |
-| Phase size warning | A few hundred changed lines | The harness warns above this, never refuses (M4) |
+| Phase size warning | Set during the pilot | A size measure (changed lines and files) standing in for about one hour of review. The harness warns above it, never refuses (M4) |
 | Log content | Full transcripts | Or audit only (M9) |
 | Log destination | Local only | Or Amazon S3 (M15) |
 | Model provider | None; must be set | Claude API, Amazon Bedrock or OpenAI-compatible (M16), plus the approved models |
 | Minimum harness version | None | Older versions refuse to run (M17) |
-| Sandboxed agent-run tests | Off | Only if C2 is built |
-| Test service containers | None | Images the sandbox may start for tests, such as a database (C2) |
-| Risky-code flags | Off | C3 |
 | Protected and unreadable paths | The defaults in M7 and M12 | The organization can add to them |
+| Readable git-ignored folders | None | Exceptions to M12's ignored-file rule, such as dependency folders. Organization only |
+| Content scanning (M18) | Secrets on; redact reads, refuse writes and MR text | Can switch reads to block |
+| Organization data patterns | None | Precise patterns for the organization's own identifiers (M18) |
+| Personal-data detection | Off | Generic detectors, opt-in (M18) |
 | Source control host | None; must be set | Host URL and API type, and how developers obtain a token |
 | Network | System settings | HTTPS proxy and extra CA certificates, often needed for self-hosted hosts and inspecting proxies |
 | Usage limits | None | Tokens or spend per developer per day, and per session |
@@ -188,6 +194,16 @@ Choosing a provider is configuration, not a separate implementation.
 - **Organization-controlled updates.** The harness never updates itself. Organizations push new versions through the same channel as installs, and the policy can set a minimum version below which the harness refuses to run.
 - **Build from source.** Builds are reproducible from a documented command. Releases include checksums, an SBOM and signed build provenance, and the signing step is documented so organizations can sign their own builds.
 
+**M18. Content scanning.** The harness scans everything sent to the model (file contents, search results, test and CI output, and developer pastes) and everything the agent produces (file writes and MR text).
+- **Secrets: always on.** Known token formats, private key blocks, connection strings with passwords, and high-entropy values assigned to names like `password` or `token`. Detection of this kind is accurate enough not to cause alert fatigue.
+- **Organization patterns: optional.** The organization supplies precise patterns for its own sensitive identifiers, such as record or study ID formats.
+- **Personal-data detection: optional, off by default.** Generic detectors (for example national ID numbers, or card numbers that pass a checksum) are opt-in. Broad detection of names, dates and addresses is noisy in ordinary code and test fixtures, and constant false alarms would push developers to unrestricted tools.
+- **What happens on a match.** Content going to the model is redacted by default (the match is replaced with a marker naming its type, so the agent can keep working), or blocked entirely if policy says so. A file write containing a match is refused. MR text containing a match is never sent to the host.
+- **Developer pastes.** The harness can't stop a developer typing something, but it scans pastes and asks for confirmation before sending anything that matches.
+- **Logged without the value.** Each match is logged (M9) with its type and location, never the matched text.
+
+Scanning is a backstop, not a guarantee. It reduces the chance of sensitive content reaching the model or the host, but it can miss things. The primary control is keeping restricted data out of repositories (P7).
+
 ### Should
 
 **S1. Commands in prose.** The model is instructed (but not forced) to describe goals rather than write commands for the developer to run. If the model suggests shell commands, the harness flags them as unverified. Detection covers fenced code blocks marked as shell and lines that start with a shell prompt such as `$`, which is reliable. The harness shows them with a label ("unverified command from the model: read before running") and no copy button. Commands buried in a sentence are harder to detect, which is why the model is also instructed not to write them.
@@ -207,7 +223,8 @@ These aren't features of the tool, but the design depends on them:
 - **P3.** MRs containing agent-written changes go through the same human review as any other MR.
 - **P4.** Each model provider the organization enables is approved under its data-processing agreements.
 - **P5.** If logs go to S3 or the model provider is Bedrock: an AWS account with IAM Identity Center, the log bucket and KMS keys set up as in M15, Bedrock model access enabled for the approved models, and a role limited to those permissions.
-- **P6.** Repositories write JUnit XML test reports from their build tool (M14). If sandboxed agent-run tests (C2) are built and enabled: Podman or Docker on developer machines, and synthetic or seeded data for any service containers.
+- **P6.** Repositories write JUnit XML test reports from their build tool (M14).
+- **P7.** Restricted and regulated data, and real credentials, are kept out of source repositories, including test fixtures and saved notebook output. File rules (M12) and content scanning (M18) are a backstop for mistakes, not a substitute.
 
 ## 9. Success measures
 
@@ -217,12 +234,12 @@ To be agreed with leadership before a pilot:
 - **Speed:** time from feature start to MR, compared with working without the tool.
 - **Quality:** rework requests and defects found in MR review, compared with MRs written without the tool.
 - **Understanding:** reviewers rate, in one quick step, whether the MR author could explain the change.
-- **Friction:** how often protected-path or read refusals and dependency suggestions get in the way of legitimate work.
-- **Demand for agent-run tests (decides C2):** how often developers wish the agent could run tests itself, and how many developer test runs a typical "fix the failing tests" task takes.
+- **Friction:** how often protected-path or read refusals, scanning false positives and dependency suggestions get in the way of legitimate work.
+- **Demand for agent-run tests:** how often developers wish the agent could run tests itself, and how many developer test runs a typical "fix the failing tests" task takes. This shows whether a sandbox for agent-run tests is worth considering later.
 
 ## 10. Purposefully out of scope
 
-- The agent running commands, builds or tests. The developer runs tests and the agent reads the results (M14). Agent-run tests in a sandbox (C2) are a possible later addition.
+- The agent running commands, builds or tests. The developer runs tests and the agent reads the results (M14). Agent-run tests in a sandbox could be considered later if the pilot shows demand.
 - Changes to CI configuration, build scripts, dependencies, git internals or IDE configuration (see M7 and M8).
 - Committing or pushing. The developer does both.
 - Unattended or scheduled operation. A developer is present for every task.
@@ -242,7 +259,7 @@ To be agreed with leadership before a pilot:
 
 ### Later hardening
 
-6. **Policy signing:** verifying that the policy file is signed by the organization, beyond file permissions and managed delivery (M17).
+5. **Policy signing:** verifying that the policy file is signed by the organization, beyond file permissions and managed delivery (M17).
 
 ## 12. Configuration reference
 
@@ -274,20 +291,21 @@ What each party provides to get the tool running. Nothing in the organization or
 |---|---|
 | **Log retention: audit events** | **5 years** |
 | **Log retention: transcripts** | **5 years** |
-| Phase size warning | A few hundred changed lines |
+| Phase size warning | Set during the pilot, as a stand-in for about one hour of review |
 | Log content | Full transcripts |
 | Log destination | Local. For S3: bucket, region, KMS key ARNs for audit events and for transcripts, and the upload role |
 | Extra protected and unreadable paths | None beyond M7 and M12 |
+| Readable git-ignored folders | None |
+| Content scanning | Secrets on; redact reads, refuse writes and MR text |
+| Organization data patterns, personal-data detection | None, off |
 | Usage limits | None |
 | Support details | None |
 | Minimum harness version | None |
-| Sandboxed agent-run tests (C2), risky-code flags (C3) | Off |
 
 ### Repository (protected files the agent cannot edit)
 
 - `.agentignore`: extra protected and unreadable paths. These can only add restrictions.
 - Test results path, if it is not the build tool's default (M14).
-- If C2 is built: the test command and allowed service containers.
 
 ### Developer (once, at first run)
 
@@ -337,13 +355,18 @@ Illustrative only; the final format is settled during implementation. This examp
   },
   "paths": {
     "protected": ["deploy/**"],
-    "unreadable": ["data/restricted/**"]
+    "unreadable": ["data/restricted/**"],
+    "readable_ignored": ["node_modules/**", ".venv/**"]
+  },
+  "scanning": {
+    "secrets": { "on_read": "redact" },
+    "organization_patterns": [{ "name": "study-id", "regex": "STUDY-[0-9]{6}" }],
+    "personal_data": false
   },
   "usage_limits": { "tokens_per_developer_per_day": 5000000 },
   "support": {
     "contact": "#hermit-help",
     "acceptable_use_url": "https://intranet.example.org/ai-acceptable-use"
-  },
-  "features": { "sandboxed_agent_tests": false, "risky_code_flags": false }
+  }
 }
 ```
