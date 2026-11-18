@@ -158,12 +158,21 @@ Organization or repository configuration can allow named paths, such as test fix
 
 **M9. Dependencies are suggested, not added.** When a change needs a new dependency, the agent discusses it (package, version, purpose) and the developer chooses to add it by hand or not add it. The model is requested to present the dependency as a description, not a copy-and-paste-able import statement.
 
-**M10. Logging.** Every agent action and refusal, and every plan approval, is logged with the user, session and time. Snapshots (M3) let the log separate the agent's changes from the developer's. Organization policy (M14) sets what is logged:
-- **Audit only** (default): actions, refusals, approvals, file paths and keyed content hashes, without conversation text or file contents.
-- **Audit plus transcripts** (organization opt-in): audit events plus the complete conversation, including code and test output the model saw. Transcripts can hold personal data or a secret that scanning (M19) missed, so they get shorter retention and can be erased (M16). Content scanning runs on transcripts before they are written.
-- **None**
+**M10. Logging.** Every agent action and refusal, and every plan approval, is logged with the user, session and time. Snapshots (M3) let the log separate the agent's changes from the developer's. Logs are kept in three tiers, because identifiers turn up in more than file contents: a file name can be data (M13), and so can a search query, a tool argument, a branch name or an MR title ("find where we handle Jane Doe's record").
 
-**Keyed hashes.** A plain hash of a short file or config value can be reversed by guessing. Each session gets a random hashing key, used for keyed hashes (HMAC). The key is stored with the log, encrypted with an organization KMS key, so only people allowed to decrypt with that key can verify hashes, and nobody else can brute-force them.
+| Tier | Contents | Default | Retention and erasure (M16) |
+|---|---|---|---|
+| **Audit events** | Event type, time, user, session, repository and outcome. Paths, search queries, tool arguments, branch names and MR titles appear only as keyed hashes | On | 5 years, compliance mode. Holds no plaintext identifiers |
+| **Audit details** | The plaintext of those fields, and read records (below) | On | 1 year, governance mode, per-session keys, so it can be erased |
+| **Transcripts** | The complete conversation, including code and test output the model saw | Off (organization opt-in) | 90 days, governance mode, per-session keys |
+
+Organization policy (M14) can turn off audit details or transcripts, or turn off logging entirely. Content scanning (M19) runs on audit details and transcripts before they are written, but they can still hold personal data or a secret that scanning missed, which is why both can be erased.
+
+**Keyed hashes.** A plain hash of a short value, such as a file name or a patient's name, can be reversed by guessing. Audit events therefore use keyed hashes (HMAC) made with an organization-wide hashing key held in KMS. Authorized investigators can still search across all sessions ("which sessions touched `data/patients/x.csv`?"), and only people with access to the key can test guesses. The key rotates on a schedule, and destroying an old key makes that period's hashes impossible to link to anything while the events themselves stay. Under GDPR, keyed hashes are pseudonymized data, which is still personal data; key rotation is what makes them effectively erasable, and the organization's privacy office should confirm this approach.
+
+**Read records for breach scoping.** Breach-notification rules, such as HIPAA's, require deciding which individuals' data was exposed, not just which sessions. So for every read of a tracked file, the audit details record the git blob hash and line range. Git stores content by hash, so investigators can reconstruct exactly what was sent from the repository later. Content that can't be rebuilt that way (developer pastes, untracked files, test and CI output, MR comments) needs an organization choice:
+- **Worst-case scoping (default):** a documented decision that any incident involving these sources is assumed to include everything they could have contained.
+- **Escrow:** an encrypted, short-retention copy of exactly what was sent to the model from these sources (not the model's replies), erasable like transcripts. Recommended wherever breach-notification law applies.
 
 **The destination is a required choice.** Organization policy must say where logs go: Amazon S3 (M16), the model gateway's log (M17), or local only. A local-only log is controlled by the developer, so it is not an audit trail anyone can rely on, and the harness shows a warning when it is used.
 
@@ -199,11 +208,14 @@ The policy covers at least:
 | **Log retention: audit events** | **5 years** | **Review this before the first production upload.** Audit events use S3 Object Lock in compliance mode, which cannot shorten retention for logs already written (M16). |
 | **Log retention: transcripts** | **90 days**, if transcripts are turned on | **Review this too.** Transcripts contain code and possibly data. They use governance mode and per-session keys, so administrators can erase them (M16). |
 | Phase size warning | Set during the pilot | A size measure (changed lines and files) standing in for about one hour of review. The harness warns above it, never refuses (M4) |
-| Log content | Audit only | Or audit plus transcripts, or none (M10) |
+| **Log retention: audit details** | **1 year** | **Review this too.** Plaintext paths, queries, arguments and read records. Governance mode and per-session keys, so administrators can erase them (M16). Long enough to investigate incidents discovered late |
+| Log content | Audit events and audit details | Transcripts are opt-in; audit details or all logging can be turned off (M10) |
+| Organization hashing key | Rotated yearly | KMS key for keyed hashes in audit events. Destroying an old key makes that period's hashes unlinkable (M10) |
+| Breach scoping for unrebuildable content | Worst-case scoping | Or escrow of what was sent from pastes, untracked files, test and CI output and MR comments. Escrow is recommended where breach-notification law applies (M10) |
 | Log destination | None; must be set | Amazon S3 (M16), the model gateway's log (M17), or local only, which is not a reliable audit trail (M10) |
 | Local file retention | A few days after confirmed upload; session files cleaned up at session end | For local logs and session files on developer machines (M10) |
 | Model provider | None; must be set | Claude API, Amazon Bedrock, OpenAI-compatible, or an organization gateway (M17), plus the approved models as specific IDs or inference profiles. A gateway is recommended for production |
-| Data classes | One class for all repositories | Repository patterns mapped to classes, and the providers and models each class may use. Unmatched repositories get the most restrictive class (M23) |
+| Data classes | One class for all repositories | Repository patterns mapped to classes, and the providers and models each class may use. Local-only classes name the approved local server programs. Unmatched repositories get the most restrictive class (M23) |
 | Managed-device marker | None | MDM marker that makes a missing policy stop the harness (M18). Organization builds have it built in |
 | Minimum harness version | None | Older versions refuse to run (M18) |
 | Protected and unreadable paths | The defaults in M8 and M13 | The organization can add to them |
@@ -244,12 +256,12 @@ Developers run agent-written tests before or after reviewing them, as they would
 - **Write-only, short-lived credentials.** Developers sign in through IAM Identity Center. The role can only call `s3:PutObject` under that developer's own prefix. It has no read, list or delete permission, and there are no long-lived access keys. The harness holds the credentials, and the agent cannot use them because it has no shell.
 - **Tamper evidence.** Each event includes a hash of the previous one, so gaps and edits are detectable. The bucket uses versioning and S3 Object Lock.
 - **Lock modes differ by content.**
-  - **Audit events** use compliance mode, so no one, including administrators, can delete or overwrite them during their retention period (M14). They hold no code or data, so nothing in them should ever need erasing.
-  - **Transcripts** use governance mode. It still stops developers, but named administrators with explicit permission can delete a transcript to clean up a spill.
-- **Transcripts can be erased.** Each session's transcript is encrypted with its own data key, and the keys are kept in separate storage that can be deleted. Deleting a session's key makes its transcript permanently unreadable, even while Object Lock keeps the encrypted object (crypto-shredding). This is a common way to combine immutable logs with erasure requests and spill cleanup. Whether it meets a particular legal erasure requirement is a question for the organization's privacy office.
+  - **Audit events** use compliance mode, so no one, including administrators, can delete or overwrite them during their retention period (M14). They hold identifiers only as keyed hashes (M10), and rotating the hashing key is how old hashes stop being linkable.
+  - **Audit details, escrow and transcripts** use governance mode. It still stops developers, but named administrators with explicit permission can delete them to clean up a spill.
+- **Audit details, escrow and transcripts can be erased.** Each session's records in these tiers are encrypted with their own data key, and the keys are kept in separate storage that can be deleted. Deleting a session's key makes those records permanently unreadable, even while Object Lock keeps the encrypted objects (crypto-shredding). This is a common way to combine immutable logs with erasure requests and spill cleanup. Whether it meets a particular legal erasure requirement is a question for the organization's privacy office.
 - **Anchored chain head.** A hash chain cannot show that its end was cut off: a developer could delete the last part of the local log before it is uploaded. So the harness records the session ID, event number and current chain hash off the machine as it goes. With a gateway (M17), it sends them with every model request and the gateway records them. Without one, it uploads them to S3 as a small separate object about every minute. The uploaded log must reach at least the last anchored point, or the gap is reported.
 - **Cross-checks against server-side records.** Scheduled checks compare Hermit's sessions with records the developer cannot alter: the gateway's request log, or without a gateway the provider's own records (CloudTrail for Bedrock, which records that calls happened without their content, or usage per API key in the provider's console). Bedrock model invocation logs are not used, because they copy content (P5). Model usage with no matching Hermit session, and sessions whose logs stop short of their anchor, raise an alert.
-- **Encryption and access.** SSE-KMS with a dedicated key. The bucket policy rejects non-TLS requests and unencrypted uploads, and Block Public Access is on. Transcripts, if turned on, go under a separate prefix with their own KMS key and tighter decryption access than audit events.
+- **Encryption and access.** SSE-KMS with a dedicated key. The bucket policy rejects non-TLS requests and unencrypted uploads, and Block Public Access is on. Audit details, escrow and transcripts each go under a separate prefix with their own KMS key and tighter decryption access than audit events. The organization hashing key (M10) is a separate KMS key, usable only by investigators.
 - **Querying.** Logs are partitioned by date for querying with Athena, which costs nothing until someone runs a query.
 - **Cost.** Storage cost is small. A rough estimate for 50 developers, a few sessions a day and a couple of megabytes per transcript is about 15 GB a year compressed, or under 100 GB over five years. Lifecycle rules can move older logs to a Glacier storage class, and Object Lock still applies there. The real decision is whether to keep transcripts at all, and for how long, which is why they are off by default and have their own shorter retention (M14).
 - **Optional upgrades.** Kinesis Data Firehose in front of S3 for near-real-time delivery or very large volumes, and CloudWatch Logs for alerting (for example, on repeated protected-path refusals).
@@ -275,7 +287,7 @@ Supported providers:
 Choosing a provider is configuration, not a separate implementation.
 
 - **Local model servers.** The OpenAI-compatible adapter also works with model servers on the developer's own machine (for example Ollama, LM Studio, llama.cpp's server or vLLM), so nothing leaves the machine. This suits testing the harness and evaluating local models. Local models are usually weaker at multi-step tool use, so they must pass the same evaluation before an organization approves one for real work.
-- **Encrypted connections except on loopback.** The harness requires HTTPS for every model endpoint, except loopback addresses (`localhost`, `127.0.0.1`, `::1`), where plain HTTP is allowed. A configuration mistake can't send code over an unencrypted network connection.
+- **Encrypted connections except on loopback.** The harness requires HTTPS for every model endpoint, except loopback addresses (`localhost`, `127.0.0.1`, `::1`), where plain HTTP is allowed. A configuration mistake can't send code over an unencrypted network connection. This exception is about encryption only. It says nothing about where the model runs: an `ssh -L` tunnel, or VS Code's automatic port forwarding on a remote development machine, can make a loopback port lead to another machine. Data classes that require a local model check where it actually is (M23).
 
 **M18. Distribution and managed configuration.** Organizations can deploy the tool and its policy (M14) with the device management they already use.
 - **Supported environments.** Desktop macOS, Windows and Linux, headless Linux and remote development machines, and virtual desktops, including non-persistent ones.
@@ -332,6 +344,7 @@ So an agent edit can run on the developer's machine, with their credentials and 
 - **Pending-changes mode (organization option, off by default).** The agent's changes for each phase are held outside the working tree, where the IDE cannot see them. The developer reviews the diff, as text in the terminal or as a patch opened in the IDE, and then applies it. Nothing the agent writes can run until a person has seen it. This costs convenience (no editing in place, and an extra step for every phase), so it is for organizations whose security review cannot accept the residual risk.
 
 **M23. Data classes by repository.** Not every repository can use every provider. Organization policy defines data classes and maps repositories to them. Each class lists the providers and models it may use, for example "public: any approved model", "internal: the gateway", "restricted: the local model only, or no model at all". Export-control rules, such as ITAR, are usually expressed this way.
+- **Local-only classes verify the listener.** A class that requires a local model names the approved local server programs (for example Ollama). Before sending anything, the harness checks which process is listening on the loopback port, using the operating system's connection tables. If the listener is `ssh`, a VS Code tunnel, or anything it cannot identify as an approved server, it refuses. On a remote development machine, "local" means that machine, and the organization decides whether the machine's location meets the class's residency rules.
 - **Repository identity.** The harness identifies a repository by its git remote URL, matched against patterns in the policy. A developer can change a remote in seconds, so a repository that matches no pattern gets the most restrictive class, never the least. Disguising a repository as a less restricted one is deliberate circumvention, which the logs (M10) and gateway records show.
 - **Enforced at the gateway too.** With a gateway (M17), the harness sends the repository identity with each request, and the gateway applies the same mapping on the server.
 - **Shown to the developer.** The harness shows the repository's class at startup, so a developer knows which models are in use and why.
@@ -436,12 +449,13 @@ To be agreed with leadership before a pilot:
 
 ### Runbook: restricted data was sent to the model
 
-1. **Find the affected sessions** in the audit log (M10, M16) by user, repository, time and scanning or refusal events.
-2. **Rotate** any credential that may have been exposed. Assume exposure if in doubt.
-3. **Ask the provider to delete the data**, where its terms allow it (P4). Record the request and the response.
-4. **Erase affected transcripts** by deleting their session keys (crypto-shredding, M16), and clear local session files on the developer's machine.
-5. **Fix the cause:** add the path to the unreadable list (M13), add an organization data pattern (M19), or move the data out of the repository (P7).
-6. **Notify** according to the organization's own incident and data-breach policies.
+1. **Find the affected sessions** in the audit log (M10, M16) by user, repository, time and scanning or refusal events. Investigators with access to the hashing key can search by path or term across all sessions.
+2. **Determine which individuals' data was exposed.** Reconstruct what was sent from tracked files using the blob hashes and line ranges in the audit details (M10). For pastes, untracked files, test and CI output and MR comments, use escrow if it is turned on, or otherwise apply worst-case scoping. Breach-notification rules depend on this answer; under HIPAA, for example, it feeds the four-factor risk assessment, and notification is due within 60 days of discovery. Legal counsel owns the decision.
+3. **Rotate** any credential that may have been exposed. Assume exposure if in doubt.
+4. **Ask the provider to delete the data**, where its terms allow it (P4). Record the request and the response.
+5. **Erase affected records** in audit details, escrow and transcripts by deleting their session keys (crypto-shredding, M16), once the investigation no longer needs them, and clear local session files on the developer's machine.
+6. **Fix the cause:** add the path to the unreadable list (M13), add an organization data pattern (M19), or move the data out of the repository (P7).
+7. **Notify** according to the organization's own incident and data-breach policies.
 
 ## 13. Configuration reference
 
@@ -460,7 +474,7 @@ What each party provides to get the tool running. Nothing in the organization or
 | Managed-device marker | How the harness recognizes a managed device, if not an organization build (M18) |
 | Source control host | URL and type (GitLab, GitHub, Bitbucket) |
 | Source control credential method | An OAuth application ID, where the host supports device sign-in. Otherwise a personal access token with the narrowest scope that can read the repository and open MRs |
-| Log destination | S3 (bucket, region, upload role, the audit KMS key, and for transcripts their own KMS key and key store), the model gateway's log, or local only (M10, M16) |
+| Log destination | S3 (bucket, region, upload role, the organization hashing key, a KMS key for audit events, and separate KMS keys and a session key store for audit details, escrow and transcripts), the model gateway's log, or local only (M10, M16) |
 
 **Often needed**
 
@@ -476,7 +490,10 @@ What each party provides to get the tool running. Nothing in the organization or
 | **Log retention: audit events** | **5 years** |
 | **Log retention: transcripts** | **90 days**, if turned on |
 | Phase size warning | Set during the pilot, as a stand-in for about one hour of review |
-| Log content | Audit only |
+| **Log retention: audit details** | **1 year** |
+| Log content | Audit events and audit details |
+| Organization hashing key | Rotated yearly |
+| Breach scoping for unrebuildable content | Worst-case scoping (escrow recommended where breach-notification law applies) |
 | Local file retention | A few days after confirmed upload |
 | Data classes | One class for all repositories; unmatched repositories get the most restrictive class (M23) |
 | Allowed MR target branches | The default branch (M24) |
@@ -529,7 +546,11 @@ Illustrative only; the final format is settled during implementation. This examp
   "data_classes": {
     "classes": {
       "internal": { "providers": ["bedrock"] },
-      "restricted": { "providers": ["openai_compatible"], "endpoint": "http://localhost:11434/v1" }
+      "restricted": {
+        "providers": ["openai_compatible"],
+        "endpoint": "http://localhost:11434/v1",
+        "approved_local_servers": ["ollama"]
+      }
     },
     "repositories": [
       { "remote": "gitlab.example.org/restricted/**", "class": "restricted" },
@@ -548,8 +569,11 @@ Illustrative only; the final format is settled during implementation. This examp
     "extra_ca_certificates": ["/etc/hermit/example-root-ca.pem"]
   },
   "logging": {
-    "content": "audit_only",
-    "retention": { "audit_events_years": 5, "transcripts_days": 90 },
+    "tiers": { "audit_details": true, "transcripts": false },
+    "retention": { "audit_events_years": 5, "audit_details_days": 365, "transcripts_days": 90 },
+    "hashing_key_arn": "arn:aws:kms:us-east-1:123456789012:key/<hmac-key-id>",
+    "hashing_key_rotation_days": 365,
+    "breach_scoping": "worst_case",
     "local_retention_days_after_upload": 3,
     "destination": "s3",
     "s3": {
