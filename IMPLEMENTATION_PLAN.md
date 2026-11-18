@@ -138,11 +138,11 @@ Draft `CLAUDE.md`:
 # Commands
 - All checks: make check
 - One package: go test ./internal/fsguard/...
-- One test: go test ./internal/fsguard/ -run TestM21_SymlinkToSSH
+- One test: go test ./internal/fsguard/ -run TestM21_1_SymlinkToSSH
 - Fuzz one target for 60s: go test ./internal/fsguard/ -fuzz FuzzNormalize -fuzztime 60s
 
 # Decisions not in the code
-- REQUIREMENTS.md is the spec. Cite requirement IDs in commit messages and test names.
+- REQUIREMENTS.md is the spec. Cite requirement IDs in commit messages and test names, down to the numbered part where there is one (M21.1 becomes M21_1 in a test name).
 - Never change REQUIREMENTS.md to match the code. Stop and ask instead.
 - Repository files only through internal/fsguard; local storage only through internal/localstore.
 - If a requirement is ambiguous or a test can't pass without changing the spec, write the question to QUESTION.md and stop.
@@ -163,7 +163,7 @@ paths:
 ---
 - Fail closed: any error or unknown case refuses, never allows.
 - Every rule needs a test for the allowed case and the refused case.
-- Name hostile tests after the requirement and case, for example TestM21_SymlinkToSSH.
+- Name hostile tests after the requirement part and case, for example TestM21_1_SymlinkToSSH for M21.1.
 - No dependencies beyond the approved list in IMPLEMENTATION_PLAN.md, milestone 0, without asking.
 ```
 
@@ -211,7 +211,7 @@ Checks: `docs/spike-findings.md` records every measure for every task, applies t
 
 ### Milestone 1: Policy
 
-Requirements: M14 (all parts; M14.4–M14.9 as the schema), M18 (policy location, refuse writable policy, fail closed, managed-device detection, recheck before each request, unmanaged mode, minimum harness version), M23 (class ranking and repository matching). High effort. Can run in parallel with milestones 3 and 4.
+Requirements: M14 (all parts; M14.4–M14.9 as the schema), M18.5–M18.10 (policy location, refusing a writable policy, failing closed and managed-device detection, unmanaged mode, recheck before each request, minimum harness version), M23.1, M23.2 and M23.5 (classes, ranking and repository matching). High effort. Can run in parallel with milestones 3 and 4.
 
 Delivers: `internal/policy` with schema validation of every setting in M14.4 to M14.9, per-OS policy locations, the minimum-version check, and data class resolution from the git remote; and `internal/gitcmd` with its first fixed subcommand (reading the remote). Later milestones add subcommands to that fixed list, and each addition shows up in review.
 
@@ -226,7 +226,7 @@ Checks:
 
 ### Milestone 2: Credentials, local storage and network client
 
-Requirements: M18 (credential storage and fallbacks), M10.11–M10.15 (files on the developer's machine, session maximum age, `hermit purge`), M14.9 (HTTPS proxy and extra CA certificates), M17 (HTTPS except on loopback). High effort. Can run in parallel with milestones 3 and 4.
+Requirements: M18.2 (credential storage and fallbacks), M10.11–M10.15 (files on the developer's machine, session maximum age, `hermit purge`), M14.9 (HTTPS proxy and extra CA certificates), M17.14 (HTTPS except on loopback). High effort. Can run in parallel with milestones 3 and 4.
 
 Delivers: `internal/credstore` (operating system credential store, kernel keyring on headless Linux, sign in each session; on macOS, reaching the Keychain without cgo or running a program, per open decision 8); `internal/localstore` (encryption at rest with its key in `credstore`, readable only by the developer's account, retention, session maximum age and cleanup rules from M10, removal on uninstall); and `internal/netclient`, the one HTTP client every outbound connection uses (model providers, source control, log upload), applying the proxy, extra CA certificates and the HTTPS-only rule.
 
@@ -267,7 +267,7 @@ Checks:
 
 ### Milestone 5: Agent loop and scripted provider
 
-Requirements: M1, M2, M9, M3 (stale-edit detection, edits to altered content), M10.1 (through the audit event interface), M10.14 (resume rules, condensed summaries as transcripts), M10.16 (one repository per session), M19 and M20 (scanning and checks on writes), S4, S5 (tool-call parser), S7. Depends on milestones 2, 3 and 4. High effort. This is the largest milestone, so run it as two sessions: first the tools and their wiring to `fsguard` and `scan`, then the loop, condensing and resume.
+Requirements: M1, M2, M9, M3.2 and M3.3 (stale-edit detection, edits to altered content), M10.1 (through the audit event interface), M10.14 (resume rules, condensed summaries as transcripts), M10.16 (one repository per session), M19.7, M20.2 and M20.7 (scanning and checks on writes), S4, S5 (tool-call parser), S7. Depends on milestones 2, 3 and 4. High effort. This is the largest milestone, so run it as two sessions: first the tools and their wiring to `fsguard` and `scan`, then the loop, condensing and resume.
 
 Delivers: the tool design: how an edit names what it changes, how edits apply to the real file when the model's view was altered (M3), and the shape and result sizes of search, listing and reads. It starts from the spike's findings and open decision 9, and is measured with the first evaluation tasks (milestone 13). Then `internal/tools` (the fixed tool set, no shell or network tools; read tracking and stale-edit refusal using `fsguard`'s conditional write; edits that overlap redacted or removed text refused; scanning and hidden-character checks on what each write adds), `internal/loop` (with every new model-bound message passing through `scan` and every displayed message through `render`; one repository per session; conversation state and condensed summaries kept in `localstore` as local transcripts; resume only within the session maximum age), the provider interface, including a hook for per-request metadata (milestones 7 and 8), the audit event interface with an in-memory recorder for tests (milestone 8 implements the real one), `scan.Fixed` for harness-written text, `internal/tooldef` for tool definitions, and the scripted provider. Standing instructions (S7).
 
@@ -291,7 +291,7 @@ Checks:
 
 ### Walking skeleton: first usable build
 
-Requirements: M11, M12 (minimal), M17 (the Claude API adapter only). Depends on milestone 5. Can run alongside milestones 6–9.
+Requirements: M11, M12 (minimal), M17.1 and M17.6 (the provider interface and the Claude API adapter only). Depends on milestone 5. Can run alongside milestones 6–9.
 
 Delivers: the smallest Hermit a developer can use: the Claude API adapter, built on `anthropic-sdk-go` under the conditions in milestone 0 and using `credstore` and `netclient`, and a minimal terminal interface on the alternate screen that shows only `render.Safe` text. The team uses it on Hermit's own repository and on non-sensitive repositories, with the first evaluation tasks run against it. Milestones 7 and 11 build on this adapter and interface rather than starting again.
 
@@ -299,7 +299,7 @@ Checks: a developer completes a small real task from plan to reviewed diff; the 
 
 ### Milestone 6: Working tree
 
-Requirements: M3 (snapshots and undo), M4, M5, M8 (flagging edits to scripts CI calls), M22.
+Requirements: M3.1, M3.4 and M3.5 (snapshots and undo), M4, M5, M8.6 (flagging edits to scripts CI calls), M22.3 (pending-changes mode).
 
 Delivers: `internal/worktree`: snapshots in `localstore`, `hermit undo` including untracked files, phase file lists and the unplanned-edit report, sensitive-path notes, phase size measured from snapshots as M4 defines it, with warnings at plan approval, in the next tool result when a phase first crosses the threshold, and in the phase summary, plus sizes recorded in audit events, pending-changes mode, and flags in the change summary for edits to scripts that CI configuration references (found by reading known CI formats through `fsguard`).
 
@@ -311,7 +311,7 @@ Checks: scripted sessions that edit, delete and create files, then undo; undo of
 
 ### Milestone 7: Model providers and data classes
 
-Requirements: M17, M23 (provider and feature gating, local-listener verification, repository identity and class sent to the gateway), M14.6 (usage limits). High effort. Can run in parallel with milestones 6, 8 and 9.
+Requirements: M17.1–M17.5, M17.7, M17.8, M17.12–M17.14, M23.1, M23.3, M23.4 and M23.7 (provider and feature gating, local-listener verification, repository identity and class sent to the gateway), M14.6 (usage limits). High effort. Can run in parallel with milestones 6, 8 and 9.
 
 Delivers: adapters for Bedrock (the AWS SDK's `bedrockruntime` client and the Converse API), OpenAI-compatible endpoints (Chat Completions over plain HTTP, with a tolerant parser for the tool-call quirks of local servers, fuzzed under S5) and the organization gateway (whichever of the two API styles it speaks), alongside the walking skeleton's Claude API adapter, using `credstore` for keys and tokens and `netclient` for connections; approved-model and feature enforcement per class; listening-process check for local-only classes, made on the connection the harness opened and identifying the program by executable path and signature; usage limits per session and per day, counted from provider responses and kept in `localstore` (these counters are advisory, because a developer can delete local files to reset them; the gateway is the real enforcement); per-request metadata sent to the gateway. This milestone owns the metadata mechanism and the repository identity and class it carries; milestone 8 adds the log chain head to it.
 
@@ -329,7 +329,7 @@ Checks:
 
 ### Azure and Google Cloud providers
 
-Requirements: M17 (Claude on Vertex AI, Claude on Microsoft Foundry, Azure OpenAI; data residency), M14.4 (endpoint and credential settings), M23 (provider gating per class), P11 (content logging off). Depends on milestone 7. Can run alongside milestones 8–13. High effort, as for milestone 7.
+Requirements: M17.4 and M17.9–M17.11 (Claude on Vertex AI, Claude on Microsoft Foundry, Azure OpenAI; data residency), M14.4 (endpoint and credential settings), M23.1 (provider gating per class), P11 (content logging off). Depends on milestone 7. Can run alongside milestones 8–13. High effort, as for milestone 7.
 
 Many regulated organizations already have their model agreements through Google Cloud or Microsoft, so these providers matter for adoption. But each brings its own sign-in and residency rules, so they are a separate piece of work. They aren't on the critical path.
 
@@ -375,9 +375,9 @@ Checks:
 
 ### Milestone 9: Source control
 
-Requirements: M24, S2, M20 (MR text approval and traceability), M23 (checking the repository's claimed identity with the host). GitHub first, then GitLab (open decision 3); Bitbucket is separate work after milestone 10. High effort. Can run in parallel with milestones 6, 7 and 8.
+Requirements: M24, S2, M20.3 and M20.4 (MR text approval and traceability), M23.6 (checking the repository's claimed identity with the host). GitHub first, then GitLab (open decision 3); Bitbucket is separate work after milestone 10. High effort. Can run in parallel with milestones 6, 7 and 8.
 
-Delivers: `internal/scm` with the fixed call list, current-project check, the commit check for repository identity (M23), branch rules, diff filtering by read rules, host content passed through `scan` and `render`, exact-text approval with session ID and phases, and retrieval of CI test reports. The hosts differ here (M24, "CI detail depends on the host"):
+Delivers: `internal/scm` with the fixed call list, current-project check, the commit check for repository identity (M23), branch rules, diff filtering by read rules, host content passed through `scan` and `render`, exact-text approval with session ID and phases, and retrieval of CI test reports. The hosts differ here (M24.5):
 - **GitHub** has no test report API of its own. Test results come from check runs (the summaries and annotations that test-reporting actions write), or from JUnit XML uploaded as a workflow artifact. Artifacts are downloaded as archives and parsed by the harness with milestone 10's size limits; they are never handed to the agent as files.
 - **GitLab** returns a pipeline's parsed test report through its API.
 
@@ -395,7 +395,7 @@ Checks: fixtures from Maven, Gradle, pytest and Jest; malformed and oversized XM
 
 ### Bitbucket support
 
-Requirements: M24, S2, M1 (CI results), M14.4 (host type and credential method), M15 (CI detail levels), M20 (PR text approval), M23 (commit check). Depends on milestones 9 and 10. Can run alongside milestones 11–13. High effort, as for milestone 9.
+Requirements: M24, S2, M1 (CI results), M14.4 (host type and credential method), M15.3 (CI detail levels), M20.3 (PR text approval), M23.6 (commit check). Depends on milestones 9 and 10. Can run alongside milestones 11–13. High effort, as for milestone 9.
 
 M14.4 names Bitbucket as a source control host, and many organizations use it, but it differs from GitLab and GitHub enough to be its own piece of work. It isn't on the critical path: GitLab and GitHub organizations don't wait for it.
 
@@ -411,7 +411,7 @@ Each adapter has the same fixed call list as GitLab and GitHub. The current proj
   - **Cloud:** no documented device sign-in, and app passwords stopped working in June 2026, so developers use an API token with the narrowest scopes that read the repository and pull requests and write pull requests. The exact scope names come from the token creation screen.
   - **Data Center:** HTTP access tokens, repository-scoped where the organization allows.
   - **Policy:** neither puts a secret in the policy (M14.2).
-- **CI results (M24, "CI detail depends on the host"):**
+- **CI results (M24.5):**
   - **Cloud:** the Pipelines API offers a test report summary per step: how many tests ran and how many failed. Per-test failure messages aren't available through the API (Atlassian request BCLOUD-24022). The agent gets the counts and the failed step, and relies on local reports (M15) for details.
   - **Data Center:** no built-in CI. It reads build statuses posted by external CI (Jenkins, Bamboo).
   - **Code Insights reports:** where the organization's CI publishes them, either adapter reads them as host content: scanned, hidden characters removed, untrusted (M19, M20, M24).
@@ -427,7 +427,7 @@ Checks:
 
 ### Milestone 11: Terminal interface and setup check
 
-Requirements: M12, S1, S3, M20 (display).
+Requirements: M12, S1, S3, M20.5 and M20.6 (display).
 
 Delivers: `internal/tui` on the alternate screen, grown from the walking skeleton's interface, plan approval, phase summaries, flagged commands in prose, paste handling per class, the startup class summary, support details from the policy shown at startup and in every error; `hermit doctor`.
 
@@ -435,7 +435,7 @@ Checks: rendering tests from recorded sessions; every error path shows the suppo
 
 ### Milestone 12: Packaging and distribution
 
-Requirements: M18.
+Requirements: M18.3, M18.4, M18.11 and M18.12 (one executable, packages, reproducible builds, FIPS build), M10.15 (removal on uninstall).
 
 Delivers: reproducible builds, signed and notarized macOS package, signed MSI, deb and rpm, SBOM and build provenance, FIPS build, MDM profile and ADMX templates, documented organization signing.
 
@@ -443,7 +443,7 @@ Checks: two independent builds produce identical executables; packages install a
 
 ### Milestone 13: Evaluation suite
 
-Requirements: M17 (evaluation before approval), M11. Depends on milestones 5 and 7, so it can run alongside 8–12. Organizations need it to approve a model before a pilot, so finishing it early shortens the path to a pilot. The first tasks are written during milestone 5 and run against the walking skeleton, so the tool design is measured from the start; this milestone completes the suite and adds providers.
+Requirements: M17.3 (evaluation before approval), M11. Depends on milestones 5 and 7, so it can run alongside 8–12. Organizations need it to approve a model before a pilot, so finishing it early shortens the path to a pilot. The first tasks are written during milestone 5 and run against the walking skeleton, so the tool design is measured from the start; this milestone completes the suite and adds providers.
 
 Delivers: the evaluation suite organizations run before approving a model: scripted tasks on sample repositories that measure tool-call reliability, plan quality, phase size (using `worktree`'s measure, as M4 defines it, so evaluation and the pilot agree), how the model responds to the threshold note, and whether the model keeps within the rules, with a report per model.
 
@@ -451,7 +451,7 @@ Checks: the suite runs end to end against at least two providers, including a lo
 
 ### Milestone 14: Validation and documentation
 
-Requirements: S5, S6, M22 (IDE guidance), section 12 (operations), M11 (pilot measures).
+Requirements: S5, S6, M22.1 (IDE guidance), section 12 (operations), M11 (pilot measures).
 
 Delivers: the validation support pack; recommended IDE settings; administrator documentation, including the kill switch and incident runbook; pilot materials for the success measures in section 9.
 
@@ -506,7 +506,7 @@ Checks: a reviewer who did not build Hermit can install and configure it from th
 | S3 Setup check | 11 | S7 Standing instructions | 5 |
 | S4 Scripted provider | 5 | | |
 
-Requirements divided into numbered parts are traced part by part:
+For the other requirements divided into numbered parts, each milestone's "Requirements" line names the parts it implements, and the spec reviewer checks against those parts. M10 and M14 are spread across the most milestones, so they are also traced part by part here:
 
 | Part | Milestone | Part | Milestone |
 |---|---|---|---|
