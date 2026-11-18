@@ -24,7 +24,7 @@ If a developer uses a consumer product with no data processing agreement, it cir
 
 1. **Capabilities by construction.** The agent can do only what the harness offers as a named, structured action. There is no general shell to restrict, because there is no shell.
 2. **The commit is the approval.** The agent reads, searches and edits files without asking, within the limits in M7 and M12. The developer approves the plan up front, then approves changes the way they already do: by reviewing and committing them. The agent never commits or pushes.
-3. **Deterministic descriptions.** When the developer is asked to approve or review something, the harness's code describes it, not the model. The model's own explanation can be wrong or the product of a prompt injection.
+3. **Deterministic descriptions.** When the developer is asked to approve or review something, the harness's code describes it, not the model. The model's own explanation can be wrong or the product of a prompt injection. Where model-written text is itself the thing reviewed, such as an MR description that reviewers read as the author's explanation, the developer approves the exact text before it is sent (M19).
 4. **Reversible by default.** The agent's changes stay uncommitted in the working tree until the developer commits them. Nothing leaves the developer's machine until the developer pushes, and code reaches shared branches only through a merge request, which someone else reviews.
 5. **Understanding through normal review.** Comprehension comes from well-structured comprehensible diffs, not from quizzes or attestations that people would resent and skip.
 6. **The harness enforces, the model can only be asked.** Instructions to the model are suggestions lost to context drift. Hard rules can only be enforced in harness code, not in careful prompting. Do not fully trust the model to understand developer intent.
@@ -42,6 +42,7 @@ If a developer uses a consumer product with no data processing agreement, it cir
 | Honest model mistake | Deletes the wrong code, misreads requirements | Plan approval, small phases reviewed before the developer commits, MR review |
 | Prompt injection | Text in the repository or a dependency instructs the agent | No shell, no network, no credentials; fixed actions only; protected paths |
 | Data exfiltration | Agent sends code or secrets somewhere | No network access for the agent; only outbound channels are the model API, the organization's source control host and its log storage, all used by the harness, not the agent; files that must never reach the model API cannot be read (M12). Note: logging is an exfiltration risk, but can be turned off |
+| Leaks and deception through rendered text | An injected instruction gets the model to put an image in the MR description whose URL carries an encoded secret, fetched when a reviewer opens the MR; escape sequences or bidirectional characters hide part of a diff | External images removed and links shown in full; developer approves exact MR text; escape sequences stripped; hidden characters refused in writes and removed from reads (M19) |
 | Sensitive content in ordinary files | A token in `config/local.yml`, personal data in a test fixture or saved notebook output, a secret in a test failure message | Git-ignored files unreadable by default (M12); scanning of everything sent to the model and everything written (M18); restricted data kept out of repositories (P7) |
 | Local execution of agent-written files | Agent writes a git hook, IDE task or `.envrc` that runs on the developer's machine with their credentials | These paths are protected from edits by the model (M7), including everything under `.git/` |
 | Local execution of agent-written tests | A test or its setup code reads credentials or calls the network when the developer runs it | The agent's changes are shown separately for review (M3) before the developer runs them |
@@ -77,7 +78,7 @@ There is no reliable mitigation to developers not reviewing code. Developers mus
 - read and search files in the repository, except the paths in M12;
 - create, edit and delete files in the repository's working tree without asking, except the paths in M7;
 - read MR comments, and test summaries and failure messages from CI pipelines (not full job logs, which often contain secrets);
-- write an MR description, and open or update an MR on the organization's source control host for a branch the developer has pushed;
+- write an MR description, and open or update an MR on the organization's source control host for a branch the developer has pushed, after the developer approves the exact text (M19);
 - read the latest test results from the developer's test runs (M14).
 
 The agent never commits or pushes. The developer does both.
@@ -143,6 +144,8 @@ The policy covers at least:
 | Content scanning (M18) | Secrets on; redact reads, refuse writes and MR text | Can switch reads to block |
 | Organization data patterns | None | Precise patterns for the organization's own identifiers (M18) |
 | Personal-data detection | Off | Generic detectors, opt-in (M18) |
+| Allowed image and link domains | The source control host only | For images and links in MR text and markdown files (M19) |
+| Paths allowing hidden or bidirectional characters | None | For example locale or translation files (M19). Organization only, because this loosens a restriction |
 | Source control host | None; must be set | Host URL and API type, and how developers obtain a token |
 | Network | System settings | HTTPS proxy and extra CA certificates, often needed for self-hosted hosts and inspecting proxies |
 | Usage limits | None | Tokens or spend per developer per day, and per session |
@@ -203,6 +206,15 @@ Choosing a provider is configuration, not a separate implementation.
 - **Logged without the value.** Each match is logged (M9) with its type and location, never the matched text.
 
 Scanning is a backstop, not a guarantee. It reduces the chance of sensitive content reaching the model or the host, but it can miss things. The primary control is keeping restricted data out of repositories (P7).
+
+**M19. Safe rendering.** The agent has no network access, but text it writes is displayed by software that does: the source control host, reviewers' browsers and the developer's terminal. Display is an output channel, so the harness controls what the model's text can do when rendered.
+- **Images and links in MR text.** A markdown image is fetched as soon as someone opens the MR, with no click, and its URL can carry data to an outside server. This works even through an image proxy such as GitHub's, because the proxy fetches the URL itself. Content scanning (M18) can't be relied on here, because the model can encode the data first. So images are removed from MR text unless they point to the organization's source control host, and links are shown as plain text with the full URL visible. Organization policy can allow more domains.
+- **Markdown files the agent writes.** Source control hosts can render `.md` files in the MR's diff view, which fetches their images the same way. A write that adds an image from a domain that isn't allowed is refused.
+- **The developer approves the exact MR text.** Before any MR description or update is sent, the harness shows the exact text, unrendered and with every URL visible, and sends it only after the developer approves. Reviewers read the description as the author's explanation, so the developer should stand behind it (principle 3).
+- **Escape sequences are stripped.** Terminal escape sequences can rewrite the screen to hide part of a diff or plan, and OSC 8 hyperlinks can hide a URL behind innocent text. Everything the harness displays (the model's replies, file excerpts, diffs, test output and CI summaries) has escape sequences removed. Only the harness's own formatting is allowed, and hyperlinks are shown as plain text with the URL visible.
+- **Invisible and bidirectional characters.** Unicode tag characters and bidirectional override and isolate controls can hide code from reviewers (as in the Trojan Source attack) or smuggle data and instructions.
+  - **In writes,** these characters are refused in code by default. Other zero-width characters are flagged in the change summary. They have legitimate uses, such as right-to-left languages in translation files and zero-width joiners in emoji, so organization policy can allow them in named paths, such as locale files.
+  - **In reads,** repository content can use them to hide instructions to the model that the developer can't see. Content sent to the model has tag characters removed, and the developer is told when a file contained hidden characters.
 
 ### Should
 
@@ -298,6 +310,8 @@ What each party provides to get the tool running. Nothing in the organization or
 | Readable git-ignored folders | None |
 | Content scanning | Secrets on; redact reads, refuse writes and MR text |
 | Organization data patterns, personal-data detection | None, off |
+| Allowed image and link domains | The source control host only |
+| Paths allowing hidden or bidirectional characters | None |
 | Usage limits | None |
 | Support details | None |
 | Minimum harness version | None |
@@ -362,6 +376,10 @@ Illustrative only; the final format is settled during implementation. This examp
     "secrets": { "on_read": "redact" },
     "organization_patterns": [{ "name": "study-id", "regex": "STUDY-[0-9]{6}" }],
     "personal_data": false
+  },
+  "rendering": {
+    "allowed_domains": ["gitlab.example.org"],
+    "allow_hidden_characters_in": ["**/locales/**", "**/*.po"]
   },
   "usage_limits": { "tokens_per_developer_per_day": 5000000 },
   "support": {
