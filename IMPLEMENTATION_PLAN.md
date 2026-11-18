@@ -65,6 +65,13 @@ Other dependency rules, also checked in CI from milestone 0:
 
 **Effort.** Use high effort for milestones 1, 2, 3, 4, 5, 7, 8 and 9, where a missed edge case is a security bug: fail-closed policy loading, local storage and credentials, the file access guard, scanning and rendering, the agent loop that wires every compile-time guarantee together, which provider sees which repository's data, logging, and the source control limits. Default effort is enough elsewhere.
 
+**Review of the security milestones.** Decided: the project maintainer reviews every milestone alone, including the security-critical ones (1–5, 7–9, and the named pieces of work at high effort). This accepts a known gap: a flaw the author missed can be missed again in review, because no second person reads the diff. The gap stays open until the independent penetration test (P10), which comes after milestone 12 and before any production pilot. Three measures narrow it:
+- the hostile tests are written before the code (step 3), so the review checks code against tests that already exist;
+- the read-only spec reviewer (step 5) compares each diff with the requirements;
+- for the security milestones, a security-focused review of the diff, such as Claude Code's `/security-review`, runs too. Its findings are recorded in the pull request.
+
+The validation pack (milestone 14) states this as a known limitation, so adopting organizations can weigh it. The decision is revisited if a second maintainer joins.
+
 **Parallel work.** Some milestones are independent (section 4). Run them as separate sessions in separate worktrees so their edits can't collide, and merge them one at a time.
 
 **When to stop and ask.** If the requirements turn out to be wrong, ambiguous or contradictory, the session writes its question to `QUESTION.md` and stops (the Stop hook allows this, milestone 0). Changes to REQUIREMENTS.md are made by a person and approved by the project maintainer, never as a side effect of implementing a milestone.
@@ -459,7 +466,7 @@ Checks: the suite runs end to end against at least two providers, including a lo
 
 Requirements: S5, S6, M22.1 (IDE guidance), section 12 (operations), M11 (pilot measures).
 
-Delivers: the validation support pack; recommended IDE settings; administrator documentation, including the kill switch and incident runbook; pilot materials for the success measures in section 9.
+Delivers: the validation support pack, whose known limitations include how the security milestones were reviewed (section 2); recommended IDE settings; administrator documentation, including the kill switch and incident runbook; pilot materials for the success measures in section 9.
 
 Checks: a reviewer who did not build Hermit can install and configure it from the documentation alone; the validation pack includes current results from S4, S5 and the evaluation suite.
 

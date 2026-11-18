@@ -575,7 +575,7 @@ These aren't features of the tool, but the design depends on them:
 
 ## 9. Success measures
 
-To be agreed with leadership before a pilot:
+To be agreed with leadership before a pilot. Speed and quality are compared with work done without the tool, so each organization collects a baseline from its own recent MRs before its pilot starts:
 
 - **Retention:** pilot users keep using the tool, and report (in an anonymous survey) how tempted they are to go around it.
 - **Speed:** time from feature start to MR, compared with working without the tool.
