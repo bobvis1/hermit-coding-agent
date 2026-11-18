@@ -175,6 +175,9 @@ Supported providers:
 
 Choosing a provider is configuration, not a separate implementation.
 
+- **Local model servers.** The OpenAI-compatible adapter also works with model servers on the developer's own machine (for example Ollama, LM Studio, llama.cpp's server or vLLM), so nothing leaves the machine. This suits testing the harness and evaluating local models. Local models are usually weaker at multi-step tool use, so they must pass the same evaluation before an organization approves one for real work.
+- **Encrypted connections except on loopback.** The harness requires HTTPS for every model endpoint, except loopback addresses (`localhost`, `127.0.0.1`, `::1`), where plain HTTP is allowed. A configuration mistake can't send code over an unencrypted network connection.
+
 **M17. Distribution and managed configuration.** Organizations can deploy the tool and its policy (M13) with the device management they already use.
 - **One executable, no runtime.** The harness is written in Go and built as a single executable for each operating system and processor type. The only other requirement on developer machines is `git`.
 - **Standard packages.** A signed and notarized `.pkg` for macOS (Jamf, Intune, Kandji), a signed MSI for Windows (Intune, Configuration Manager), and `.deb` and `.rpm` packages for Linux (package repository, Ansible, Puppet). Homebrew and winget packages for individuals evaluating it.
@@ -191,6 +194,8 @@ Choosing a provider is configuration, not a separate implementation.
 **S2. Guided MR review** (task 6).
 
 **S3. Setup check.** A `hermit doctor` command confirms that the policy loads and the developer cannot modify it, that credentials work, that the model provider and source control host are reachable with the configured proxy and CA certificates, that the test results path is readable, and, when S3 logging is on, that an upload succeeds. Each failure names the setting to fix and the support contact.
+
+**S4. Scripted test provider.** A fake model provider replays a fixed sequence of model responses and tool calls, so the harness's own test suite is deterministic, fast and free. Scripts include deliberately hostile sequences, such as writing `.git/hooks/pre-commit`, reading `.env`, overwriting a file the developer has just changed, or emitting malformed tool calls, to prove that every rule is enforced by the harness regardless of the model. It is available only in test builds or unmanaged mode, never through organization policy. Testing then uses three layers: the scripted provider for automated tests, a local model for manual smoke tests, and real providers for the evaluation suite (M16).
 
 ### Could
 
