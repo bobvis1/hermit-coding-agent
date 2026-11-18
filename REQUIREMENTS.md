@@ -23,9 +23,9 @@ If a developer uses a consumer product with no data processing agreement, it cir
 ## 3. Design principles
 
 1. **Capabilities by construction.** The agent can do only what the harness offers as a named, structured action. There is no general shell to restrict, because there is no shell.
-2. **The commit is the approval.** The agent reads, searches and edits files without asking, within the limits in M7 and M12. The developer approves the plan up front, then approves changes the way they already do: by reviewing and committing them. The agent never commits or pushes.
+2. **The commit is the approval.** The agent reads, searches and edits files without asking, within the limits in M7 and M12. The developer approves the plan up front, then approves changes the way they already do: by reviewing and committing them. The agent never commits or pushes. The commit approves what is kept, not what runs: IDE tools can run agent edits before the developer reviews them (M21).
 3. **Deterministic descriptions.** When the developer is asked to approve or review something, the harness's code describes it, not the model. The model's own explanation can be wrong or the product of a prompt injection. Where model-written text is itself the thing reviewed, such as an MR description that reviewers read as the author's explanation, the developer approves the exact text before it is sent (M19).
-4. **Reversible by default.** The agent's changes stay uncommitted in the working tree until the developer commits them. Nothing leaves the developer's machine until the developer pushes, and code reaches shared branches only through a merge request, which someone else reviews.
+4. **Reversible by default.** The agent's changes stay uncommitted in the working tree until the developer commits them. The agent's code reaches the source control host only when the developer pushes, and shared branches only through a merge request, which someone else reviews. Code that the developer's tools run locally can reach the network, so this holds for what the agent writes, not for what that code does if it runs (M21).
 5. **Understanding through normal review.** Comprehension comes from well-structured comprehensible diffs, not from quizzes or attestations that people would resent and skip.
 6. **The harness enforces, the model can only be asked.** Instructions to the model are suggestions lost to context drift. Hard rules can only be enforced in harness code, not in careful prompting. Do not fully trust the model to understand developer intent.
 
@@ -47,6 +47,8 @@ If a developer uses a consumer product with no data processing agreement, it cir
 | Local execution of agent-written files | Agent writes a git hook, IDE task or `.envrc` that runs on the developer's machine with their credentials | These paths are protected from edits by the model (M7), including everything under `.git/` |
 | Bypassing path rules | A symlink in the repository to `~/.ssh/`, `.GIT/hooks/` on a case-insensitive file system, a hard link to a protected file, or a file swapped between check and write | Operations confined to the repository root and checked on resolved paths; permissive name matching; no symlink creation or multiply-linked files; atomic writes (M20); hostile tests on every operating system (S4) |
 | Local execution of agent-written tests | A test or its setup code reads credentials or calls the network when the developer runs it | The agent's changes are shown separately for review (M3) before the developer runs them |
+| Local execution the developer didn't choose | IDE test discovery imports an agent-written `conftest.py`, a linter loads an edited config file, build sync runs a build script, or a watch mode runs code on save | Guidance and recommended IDE settings; IDE configuration protected (M7); optional pending-changes mode holds edits outside the working tree until reviewed (M21) |
+| Persistent injection into other tools | Agent edits `AGENTS.md`, `CLAUDE.md` or `.cursorrules` to plant instructions for a colleague's tool, or edits `CODEOWNERS` to change who must review | These files are protected (M7) |
 | Reaching other systems | Agent queries a database or calls an internal service | No shell and no credentials, so no capability to do it |
 | Side door through CI | Agent-written code reads CI secrets or calls the network when the pipeline runs | Protected paths; no protected variables or deployment credentials on agent branches; restricted runners |
 | Supply chain | Agent adds a malicious or typo-squatted dependency | Agent cannot edit dependency manifests; it discusses trade-offs with the developer who decides and types |
@@ -99,12 +101,22 @@ The agent never commits or pushes. The developer does both.
 
 **M7. Protected paths.** The agent cannot create or change files that are executed or interpreted automatically, outside a reviewed code path. The harness refuses such changes before anything is written. The default protected list covers:
 - **CI configuration:** for example `.gitlab-ci.yml`, `.github/workflows/`, `Jenkinsfile`, and files they include;
-- **build scripts and dependency manifests:** `Makefile`, `Dockerfile`, `pom.xml`, `build.gradle`, `package.json`, lockfiles, `pyproject.toml`, `requirements*.txt`;
+- **build scripts and dependency manifests:** `Makefile`, `Dockerfile`, `pom.xml`, `.mvn/`, `mvnw`, `build.gradle(.kts)`, `settings.gradle(.kts)`, `buildSrc/`, `gradle/wrapper/` (its download URL fetches and runs code), `package.json`, lockfiles, `pyproject.toml`, `setup.py`, `setup.cfg`, `requirements*.txt`, `Cargo.toml`, `build.rs`;
+- **package manager and tool settings:** `.npmrc`, `.yarnrc.yml`, `.pypirc`, `pip.conf`, `.cargo/config.toml`;
+- **containers:** `.devcontainer/`, `docker-compose*.yml`, `compose*.yml`;
 - **git internals and configuration:** everything under `.git/` (including hooks, which would run on the developer's next commit), `.gitattributes` (which can name filter programs) and `.gitmodules`;
-- **IDE configuration that can run tasks or builders:** `.vscode/`, `.idea/`, and Eclipse's `.project`, `.classpath` and `.settings/`;
-- **tools that run on entering a folder or committing:** `.envrc`, `.pre-commit-config.yaml`.
+- **IDE configuration that can run tasks, builders or launches:** `.vscode/`, `*.code-workspace`, `.idea/`, and Eclipse's `.project`, `.classpath`, `.settings/`, `.externalToolBuilders/` and `*.launch` files;
+- **tools that run on entering a folder or committing:** `.envrc`, `.pre-commit-config.yaml`, `.husky/`, `lefthook.yml`;
+- **review rules:** `CODEOWNERS` (in any of its standard locations), which decides who must approve an MR (P3);
+- **instructions for other AI tools:** `AGENTS.md`, `CLAUDE.md`, `.cursorrules`, `.github/copilot-instructions.md` and similar. Editing them would plant instructions for the next tool a colleague uses, a prompt injection that outlasts the session.
 
-Each repository can add to the list in a .agentignore file the agent also cannot edit.
+**Lists as data.** The defaults are kept as data files, one per ecosystem (for example Python, Java, JavaScript, Rust, containers, IDEs, AI tools), versioned and shipped with each release, so they can be updated without code changes. Organization policy can add to them.
+
+**Repository additions.** Each repository can add to the list in a .agentignore file the agent also cannot edit.
+
+**Optional write allowlist.** A repository can also list the only places the agent may write (for example `src/**` and `tests/**`). The protected list still applies inside those places. Because this only adds restrictions, repositories can set it themselves, and organization policy can require one.
+
+**Scripts CI calls.** Scripts that CI configuration runs (for example `scripts/ci/*.sh`) are effectively CI configuration. The harness reads known CI configuration formats to find the scripts they reference and flags, but does not refuse, edits to them in the change summary. This is best effort, because CI configuration can reference scripts indirectly.
 
 **M8. Dependencies are suggested, not added.** When a change needs a new dependency, the agent discusses it (package, version, purpose) and the developer chooses to add it by hand or not add it. The model is requested to present the dependency as a description, not a copy-and-paste-able import statement.
 
@@ -147,6 +159,8 @@ The policy covers at least:
 | Personal-data detection | Off | Generic detectors, opt-in (M18) |
 | Allowed image and link domains | The source control host only | For images and links in MR text and markdown files (M19) |
 | Paths allowing hidden or bidirectional characters | None | For example locale or translation files (M19). Organization only, because this loosens a restriction |
+| Require a write allowlist | Off | Every repository must define where the agent may write (M7) |
+| Pending-changes mode | Off | Agent changes held outside the working tree until the developer applies them (M21) |
 | Source control host | None; must be set | Host URL and API type, and how developers obtain a token |
 | Network | System settings | HTTPS proxy and extra CA certificates, often needed for self-hosted hosts and inspecting proxies |
 | Usage limits | None | Tokens or spend per developer per day, and per session |
@@ -227,6 +241,17 @@ Scanning is a backstop, not a guarantee. It reduces the chance of sensitive cont
 - **Leaves no gap between check and use.** Writes go to a temporary file in the same folder, opened without following links, and are then atomically renamed into place. Reads open the file first and check the open file, so it can't be swapped between the check and the read.
 
 Every case above has a hostile script in the test suite (S4).
+
+**M21. Code that runs without the developer deciding.** Development tools run code from the working tree on their own:
+- test discovery that imports test files and setup code (for example VS Code's Python test discovery importing `conftest.py`);
+- editor extensions that load JavaScript configuration such as `eslint.config.js` or `jest.config.js`;
+- Gradle and Maven project sync, which runs build scripts;
+- watch modes and hot-reload servers that run code on every save.
+
+So an agent edit can run on the developer's machine, with their credentials and network access, before anyone has reviewed it. Protected paths (M7) cannot prevent this, because test and source files are exactly what the agent is meant to write. The risk comes mainly from a prompt-injected model, which M12, M18 and M19 make harder but not impossible. The harness offers three levels of protection:
+- **Guidance (default).** Documentation and recommended IDE settings turn off automatic test discovery, build sync and watch modes in repositories where the agent works. Where an IDE supports centrally managed settings, organizations can enforce them.
+- **Protected IDE configuration (default).** The agent cannot change IDE settings or launch files (M7), so it cannot turn these features back on.
+- **Pending-changes mode (organization option, off by default).** The agent's changes for each phase are held outside the working tree, where the IDE cannot see them. The developer reviews the diff, as text in the terminal or as a patch opened in the IDE, and then applies it. Nothing the agent writes can run until a person has seen it. This costs convenience (no editing in place, and an extra step for every phase), so it is for organizations whose security review cannot accept the residual risk.
 
 ### Should
 
@@ -334,13 +359,14 @@ What each party provides to get the tool running. Nothing in the organization or
 | Organization data patterns, personal-data detection | None, off |
 | Allowed image and link domains | The source control host only |
 | Paths allowing hidden or bidirectional characters | None |
+| Require a write allowlist, pending-changes mode | Off, off |
 | Usage limits | None |
 | Support details | None |
 | Minimum harness version | None |
 
 ### Repository (protected files the agent cannot edit)
 
-- `.agentignore`: extra protected and unreadable paths. These can only add restrictions.
+- `.agentignore`: extra protected and unreadable paths, and optionally a write allowlist (M7). These can only add restrictions.
 - Test results path, if it is not the build tool's default (M14).
 
 ### Developer (once, at first run)
