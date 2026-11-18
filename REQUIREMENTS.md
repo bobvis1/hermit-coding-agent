@@ -139,11 +139,21 @@ The agent never commits or pushes. The developer does both.
 **M8. Dependencies are suggested, not added.** When a change needs a new dependency, the agent discusses it (package, version, purpose) and the developer chooses to add it by hand or not add it. The model is requested to present the dependency as a description, not a copy-and-paste-able import statement.
 
 **M9. Logging.** Every agent action and refusal, and every plan approval, is logged with the user, session and time. Snapshots (M3) let the log separate the agent's changes from the developer's. Organization policy (M13) sets what is logged:
-- **Full transcripts** (default): audit events plus the complete conversation, including code and test output the model saw.
-- **Audit only:** actions, refusals, approvals, file paths and content hashes, without conversation text or file contents.
+- **Audit only** (default): actions, refusals, approvals, file paths and keyed content hashes, without conversation text or file contents.
+- **Audit plus transcripts** (organization opt-in): audit events plus the complete conversation, including code and test output the model saw. Transcripts can hold personal data or a secret that scanning (M18) missed, so they get shorter retention and can be erased (M15). Content scanning runs on transcripts before they are written.
 - **None**
 
-Logs are written locally first, to a file only the developer's account can read, and can be uploaded to central storage (M15). A local log alone can be edited or cut short by the developer; anchoring and server-side cross-checks (M15) make that detectable.
+**Keyed hashes.** A plain hash of a short file or config value can be reversed by guessing. Each session gets a random hashing key, used for keyed hashes (HMAC). The key is stored with the log, encrypted with an organization KMS key, so only people allowed to decrypt with that key can verify hashes, and nobody else can brute-force them.
+
+**The destination is a required choice.** Organization policy must say where logs go: Amazon S3 (M15), the model gateway's log (M16), or local only. A local-only log is controlled by the developer, so it is not an audit trail anyone can rely on, and the harness shows a warning when it is used.
+
+Logs are written locally first and then uploaded (M15). A local log alone can be edited or cut short by the developer; anchoring and server-side cross-checks (M15) make that detectable.
+
+**Files on the developer's machine.** The local log, conversation state, snapshots (M3) and pending changes (M21) all hold code and possibly data:
+- **Encrypted at rest** with a key held in the operating system's credential store, and readable only by the developer's account. Full-disk encryption is also assumed (P8).
+- **Local logs are deleted** once their upload is confirmed and a retention period set by organization policy has passed (a few days by default). If uploads fail, they are kept until uploaded.
+- **Session files are cleaned up** at the end of a session or after a maximum age set by organization policy, whichever comes first.
+- **Uninstalling removes everything** the harness stored.
 
 **M10. Competitive on the core loop.** For plan → diffs → tests → MR → revise, the tool is capable enough that developers don't want to switch to an unrestricted product.
 
@@ -163,11 +173,12 @@ The policy covers at least:
 
 | Setting | Default | Notes |
 |---|---|---|
-| **Log retention: audit events** | **5 years** | **Review this before the first production upload.** S3 Object Lock in compliance mode cannot shorten retention for logs already written (M15). |
-| **Log retention: transcripts** | **5 years** | **Review this too.** Transcripts contain code and possibly data, so organizations may keep them for less time than audit events. Same Object Lock caution. |
+| **Log retention: audit events** | **5 years** | **Review this before the first production upload.** Audit events use S3 Object Lock in compliance mode, which cannot shorten retention for logs already written (M15). |
+| **Log retention: transcripts** | **90 days**, if transcripts are turned on | **Review this too.** Transcripts contain code and possibly data. They use governance mode and per-session keys, so administrators can erase them (M15). |
 | Phase size warning | Set during the pilot | A size measure (changed lines and files) standing in for about one hour of review. The harness warns above it, never refuses (M4) |
-| Log content | Full transcripts | Or audit only (M9) |
-| Log destination | Local only | Or Amazon S3 (M15) |
+| Log content | Audit only | Or audit plus transcripts, or none (M9) |
+| Log destination | None; must be set | Amazon S3 (M15), the model gateway's log (M16), or local only, which is not a reliable audit trail (M9) |
+| Local file retention | A few days after confirmed upload; session files cleaned up at session end | For local logs and session files on developer machines (M9) |
 | Model provider | None; must be set | Claude API, Amazon Bedrock, OpenAI-compatible, or an organization gateway (M16), plus the approved models. A gateway is recommended for production |
 | Managed-device marker | None | MDM marker that makes a missing policy stop the harness (M17). Organization builds have it built in |
 | Minimum harness version | None | Older versions refuse to run (M17) |
@@ -190,7 +201,7 @@ The policy covers at least:
 - **Structured summary.** The agent receives which tests failed, assertion messages and stack traces, not raw console output.
 - **Freshness.** The harness compares the report's time with the agent's last change (M3). If the developer hasn't rerun the tests since, it marks the results as stale.
 - **Read-only.** The agent cannot write to the results path, so results in the log always come from a real run.
-- **Output reaches the model.** Failure messages are sent to the model API, so tests must not print restricted data. M12 applies to the results path, and full-transcript logs (M9) record what the model saw.
+- **Output reaches the model.** Failure messages are sent to the model API, so tests must not print restricted data. M12 applies to the results path, and transcripts, if turned on (M9), record what the model saw.
 
 IDE test runners (Eclipse's JUnit view, VS Code's Test Explorer) usually show results only in their own interface and don't write these reports. Developers need to run tests through the build tool, from the terminal or the IDE's build-tool integration, for the agent to see results. Running Maven or Gradle tests from the IDE (Eclipse's m2e and Buildship, VS Code's Java extensions) writes the reports, and Eclipse's JUnit view can export a test run to XML.
 
@@ -201,12 +212,16 @@ Developers run agent-written tests before or after reviewing them, as they would
 **M15. Central log storage on Amazon S3 (organization option).** When organization policy selects S3:
 - **Batched upload.** The harness appends events to the local log (M9) and uploads compressed chunks every few minutes and at session end. Failed uploads stay queued locally and are retried, including at the next start.
 - **Write-only, short-lived credentials.** Developers sign in through IAM Identity Center. The role can only call `s3:PutObject` under that developer's own prefix. It has no read, list or delete permission, and there are no long-lived access keys. The harness holds the credentials, and the agent cannot use them because it has no shell.
-- **Tamper evidence.** Each event includes a hash of the previous one, so gaps and edits are detectable. The bucket uses versioning and S3 Object Lock in compliance mode, so no one, including administrators, can delete or overwrite logs during the retention period set in M13.
+- **Tamper evidence.** Each event includes a hash of the previous one, so gaps and edits are detectable. The bucket uses versioning and S3 Object Lock.
+- **Lock modes differ by content.**
+  - **Audit events** use compliance mode, so no one, including administrators, can delete or overwrite them during their retention period (M13). They hold no code or data, so nothing in them should ever need erasing.
+  - **Transcripts** use governance mode. It still stops developers, but named administrators with explicit permission can delete a transcript to clean up a spill.
+- **Transcripts can be erased.** Each session's transcript is encrypted with its own data key, and the keys are kept in separate storage that can be deleted. Deleting a session's key makes its transcript permanently unreadable, even while Object Lock keeps the encrypted object (crypto-shredding). This is a common way to combine immutable logs with erasure requests and spill cleanup. Whether it meets a particular legal erasure requirement is a question for the organization's privacy office.
 - **Anchored chain head.** A hash chain cannot show that its end was cut off: a developer could delete the last part of the local log before it is uploaded. So the harness records the session ID, event number and current chain hash off the machine as it goes. With a gateway (M16), it sends them with every model request and the gateway records them. Without one, it uploads them to S3 as a small separate object about every minute. The uploaded log must reach at least the last anchored point, or the gap is reported.
 - **Cross-checks against server-side records.** Scheduled checks compare Hermit's sessions with records the developer cannot alter: the gateway's request log, or without a gateway the provider's own records (Bedrock model invocation logs and CloudTrail, or usage per API key in the provider's console). Model usage with no matching Hermit session, and sessions whose logs stop short of their anchor, raise an alert.
-- **Encryption and access.** SSE-KMS with a dedicated key. The bucket policy rejects non-TLS requests and unencrypted uploads, and Block Public Access is on. Full transcripts go under a separate prefix with their own KMS key and tighter decryption access than audit events.
+- **Encryption and access.** SSE-KMS with a dedicated key. The bucket policy rejects non-TLS requests and unencrypted uploads, and Block Public Access is on. Transcripts, if turned on, go under a separate prefix with their own KMS key and tighter decryption access than audit events.
 - **Querying.** Logs are partitioned by date for querying with Athena, which costs nothing until someone runs a query.
-- **Cost.** Storage cost is small. A rough estimate for 50 developers, a few sessions a day and a couple of megabytes per transcript is about 15 GB a year compressed, or under 100 GB over five years. Lifecycle rules can move older logs to a Glacier storage class, and Object Lock still applies there. The real decision is how long to keep sensitive transcripts, which is why audit events and transcripts have separate retention settings (M13).
+- **Cost.** Storage cost is small. A rough estimate for 50 developers, a few sessions a day and a couple of megabytes per transcript is about 15 GB a year compressed, or under 100 GB over five years. Lifecycle rules can move older logs to a Glacier storage class, and Object Lock still applies there. The real decision is whether to keep transcripts at all, and for how long, which is why they are off by default and have their own shorter retention (M13).
 - **Optional upgrades.** Kinesis Data Firehose in front of S3 for near-real-time delivery or very large volumes, and CloudWatch Logs for alerting (for example, on repeated protected-path refusals).
 
 **M16. Model providers.** The harness owns the agent loop and every tool. It talks to models through a small provider interface, whose adapters only translate messages, tool definitions, tool calls and tool results. Every rule in this document is enforced in the harness, so it applies the same way whichever model is used. Organization policy selects a provider and lists the approved models.
@@ -367,6 +382,7 @@ What each party provides to get the tool running. Nothing in the organization or
 | Managed-device marker | How the harness recognizes a managed device, if not an organization build (M17) |
 | Source control host | URL and type (GitLab, GitHub, Bitbucket) |
 | Source control credential method | An OAuth application ID, where the host supports device sign-in. Otherwise a personal access token with the narrowest scope that can read the repository and open MRs |
+| Log destination | S3 (bucket, region, upload role, the audit KMS key, and for transcripts their own KMS key and key store), the model gateway's log, or local only (M9, M15) |
 
 **Often needed**
 
@@ -380,10 +396,10 @@ What each party provides to get the tool running. Nothing in the organization or
 | Setting | Default |
 |---|---|
 | **Log retention: audit events** | **5 years** |
-| **Log retention: transcripts** | **5 years** |
+| **Log retention: transcripts** | **90 days**, if turned on |
 | Phase size warning | Set during the pilot, as a stand-in for about one hour of review |
-| Log content | Full transcripts |
-| Log destination | Local. For S3: bucket, region, KMS key ARNs for audit events and for transcripts, and the upload role |
+| Log content | Audit only |
+| Local file retention | A few days after confirmed upload |
 | Extra protected and unreadable paths | None beyond M7 and M12 |
 | Readable git-ignored folders | None |
 | Content scanning | Secrets on; redact reads, refuse writes and MR text |
@@ -436,8 +452,9 @@ Illustrative only; the final format is settled during implementation. This examp
     "extra_ca_certificates": ["/etc/hermit/example-root-ca.pem"]
   },
   "logging": {
-    "retention_years": { "audit_events": 5, "transcripts": 5 },
-    "content": "full_transcripts",
+    "content": "audit_only",
+    "retention": { "audit_events_years": 5, "transcripts_days": 90 },
+    "local_retention_days_after_upload": 3,
     "destination": "s3",
     "s3": {
       "bucket": "example-hermit-logs",
