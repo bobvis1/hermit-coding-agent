@@ -56,6 +56,7 @@ A developer determined to go around the tool can always find a way. The realisti
 | Supply chain | Agent adds a malicious or typo-squatted dependency | Agent cannot edit dependency manifests; it discusses trade-offs with the developer who decides and types |
 | Human rubber-stamping | Developer commits everything unread near a deadline | A careless commit reaches only a branch and an MR that another human reviews, not the developer's machine or other systems |
 | Data sent to the wrong provider or region | A restricted repository is worked on with a cloud model; a cross-region inference profile sends requests abroad; Bedrock invocation logging keeps copies of every prompt | Data classes by repository, with unknown repositories most restricted (M22); models approved as specific IDs or profiles (M16); invocation logging off or controlled (P5); provider terms confirmed before approval (P4) |
+| Misuse of the source control token, and injection through the host | An injected instruction tries to read another project, merge or approve an MR, or delete a branch; an MR comment from an outside contributor carries instructions to the model; a CI summary leaks a masked secret | Fixed calls only, current project only, fixed branch rules, no merge, approval, label or comment actions (M23); MR diffs follow the repository's read rules; host content scanned and treated as untrusted (M18, M19, M23) |
 | Credential reuse in other tools | Developer copies the model API key or Bedrock credentials from their machine and points an unrestricted agent at it | Organization model gateway: provider keys never reach laptops, short-lived SSO tokens, device certificates, request-shape checks, central logging and a kill switch (M16); without a gateway, cross-checks of provider records against Hermit's logs (M15) |
 | Log tampering by the developer | Developer deletes the end of the local log before upload, or edits it | Hash chain; chain head anchored off the machine as the session runs; cross-checks against gateway or provider records (M15); Object Lock after upload |
 | Policy bypass on the endpoint | Developer removes or corrupts the policy file to get unmanaged mode, or uses admin rights to change it | Fail closed on managed devices and on a broken policy (M17); developers are not local administrators (P8) |
@@ -99,8 +100,8 @@ These are real threats, but this tool does not try to defend against them. Each 
 **M1. Capabilities.** The agent can only:
 - read and search files in the repository, except the paths in M12;
 - create, edit and delete files in the repository's working tree without asking, except the paths in M7;
-- read MR comments, and test summaries and failure messages from CI pipelines (not full job logs, which often contain secrets);
-- write an MR description, and open or update an MR on the organization's source control host for a branch the developer has pushed, after the developer approves the exact text (M19);
+- read MR comments, and test summaries and failure messages from CI pipelines (not full job logs, which often contain secrets), for the current project only (M23);
+- write an MR description, and open or update an MR on the organization's source control host for a branch the developer has pushed, after the developer approves the exact text (M19), within the limits in M23;
 - read the latest test results from the developer's test runs (M14).
 
 The agent never commits or pushes. The developer does both.
@@ -193,7 +194,8 @@ The policy covers at least:
 | Paths allowing hidden or bidirectional characters | None | For example locale or translation files (M19). Organization only, because this loosens a restriction |
 | Require a write allowlist | Off | Every repository must define where the agent may write (M7) |
 | Pending-changes mode | Off | Agent changes held outside the working tree until the developer applies them (M21) |
-| Source control host | None; must be set | Host URL and API type, and how developers obtain a token |
+| Source control host | None; must be set | Host URL and API type, and how developers obtain a token. Use the narrowest token the host offers (M23) |
+| Allowed MR target branches | The default branch | Other branches MRs may target (M23) |
 | Network | System settings | HTTPS proxy and extra CA certificates, often needed for self-hosted hosts and inspecting proxies |
 | Usage limits | None | Tokens or spend per developer per day, and per session |
 | Support details | None | Help channel or contact, and acceptable-use policy link, shown at startup and in errors |
@@ -260,7 +262,7 @@ Choosing a provider is configuration, not a separate implementation.
 - **Build from source.** Builds are reproducible from a documented command. Releases include checksums, an SBOM and signed build provenance, and the signing step is documented so organizations can sign their own builds.
 - **FIPS build.** For settings that require FIPS 140-3 cryptography, a build uses Go's built-in FIPS mode (available since Go 1.24). Organizations check the current validation status of Go's cryptographic module against their own requirements.
 
-**M18. Content scanning.** The harness scans everything sent to the model (file contents, search results, test and CI output, and developer pastes) and everything the agent produces (file writes and MR text).
+**M18. Content scanning.** The harness scans everything sent to the model (file contents, search results, test and CI output, MR descriptions and comments, and developer pastes) and everything the agent produces (file writes and MR text).
 - **Secrets: always on.** Known token formats, private key blocks, connection strings with passwords, and high-entropy values assigned to names like `password` or `token`. Detection of this kind is accurate enough not to cause alert fatigue.
 - **Organization patterns: optional.** The organization supplies precise patterns for its own sensitive identifiers, such as record or study ID formats.
 - **Personal-data detection: optional, off by default.** Generic detectors (for example national ID numbers, or card numbers that pass a checksum) are opt-in. Broad detection of names, dates and addresses is noisy in ordinary code and test fixtures, and constant false alarms would push developers to unrestricted tools.
@@ -295,6 +297,15 @@ Every case above has a hostile script in the test suite (S4).
 - **Enforced at the gateway too.** With a gateway (M16), the harness sends the repository identity with each request, and the gateway applies the same mapping on the server.
 - **Shown to the developer.** The harness shows the repository's class at startup, so a developer knows which models are in use and why.
 
+**M23. Source control access.** The agent never sees the source control token (M2), but the harness holds it, and host tokens are coarse. A GitLab token with the `api` scope, for example, can read every project the developer can see, and can merge, approve and delete branches. So the harness limits itself:
+- **Fixed calls only.** The harness's source control client implements a fixed list of calls: read the current project; list and read its MRs and their comments; read test reports and failure summaries from its pipelines; and create or update an MR's title and description after exact-text approval (M19). There is no general way to call the host's API, so a prompt injection has nothing to steer.
+- **Current project only.** The project is identified from the repository's git remote, as in M22. Any call that would reach another project is refused, including following links in MR text.
+- **Fixed branch rules.** The source branch is always the branch the developer pushed. The target branch is the default branch or one on a list in organization policy.
+- **Never:** merging, approving, enabling auto-merge, assigning reviewers or assignees, changing labels, deleting branches or posting comments. These stay human actions.
+- **Repository rules apply to MR diffs.** Parts of an MR diff that touch files unreadable under M12 or `.agentignore` are hidden from the model, since reading a diff is another way of reading those files. Content scanning (M18) and path rules apply to diffs as they do to files.
+- **Host content is untrusted.** MR descriptions and comments, and CI output, can be written by anyone with access, including outside contributors on some projects, and CI masking of secrets is imperfect. They pass through content scanning (M18) and hidden-character removal (M19). The model is also told they are data from other people, not instructions, but that is only a request (principle 6); the real protection is that the harness offers nothing dangerous to steer.
+- **Narrower tokens where the host allows them.** Organizations use the narrowest token their host offers, such as GitHub fine-grained tokens limited to specific repositories and permissions, or project-scoped tokens. Where only coarse tokens exist, the harness's own limits above are the control.
+
 **M21. Code that runs without the developer deciding.** Development tools run code from the working tree on their own:
 - test discovery that imports test files and setup code (for example VS Code's Python test discovery importing `conftest.py`);
 - editor extensions that load JavaScript configuration such as `eslint.config.js` or `jest.config.js`;
@@ -310,7 +321,7 @@ So an agent edit can run on the developer's machine, with their credentials and 
 
 **S1. Commands in prose.** The model is instructed (but not forced) to describe goals rather than write commands for the developer to run. If the model suggests shell commands, the harness flags them as unverified. Detection covers fenced code blocks marked as shell and lines that start with a shell prompt such as `$`, which is reliable. The harness shows them with a label ("unverified command from the model: read before running") and no copy button. Commands buried in a sentence are harder to detect, which is why the model is also instructed not to write them.
 
-**S2. Guided MR review** (task 6).
+**S2. Guided MR review** (task 6). Read-only, and limited to MRs in the current project (M23), so it never pulls in code from other projects and their own rules. The current project's rules (M12, M18) apply to the MR's diff. Comments on the MR are written by the human reviewer, not the agent.
 
 **S3. Setup check.** A `hermit doctor` command confirms that the policy loads and the developer cannot modify it, that credentials work, that the model provider and source control host are reachable with the configured proxy and CA certificates, that the test results path is readable, and, when S3 logging is on, that an upload succeeds. Each failure names the setting to fix and the support contact.
 
@@ -417,6 +428,7 @@ What each party provides to get the tool running. Nothing in the organization or
 | Log content | Audit only |
 | Local file retention | A few days after confirmed upload |
 | Data classes | One class for all repositories; unmatched repositories get the most restrictive class (M22) |
+| Allowed MR target branches | The default branch (M23) |
 | Extra protected and unreadable paths | None beyond M7 and M12 |
 | Readable git-ignored folders | None |
 | Content scanning | Secrets on; redact reads, refuse writes and MR text |
@@ -474,7 +486,8 @@ Illustrative only; the final format is settled during implementation. This examp
   "source_control": {
     "type": "gitlab",
     "url": "https://gitlab.example.org",
-    "credentials": { "method": "oauth_device", "client_id": "<oauth-application-id>" }
+    "credentials": { "method": "oauth_device", "client_id": "<oauth-application-id>" },
+    "allowed_target_branches": ["main", "release/*"]
   },
   "network": {
     "https_proxy": "http://proxy.example.org:3128",
