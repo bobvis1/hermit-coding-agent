@@ -106,7 +106,7 @@ Delivers:
 | Claude API, and a gateway that speaks the Anthropic API | `github.com/anthropics/anthropic-sdk-go` | See "Model provider SDKs" below |
 | Reading CI configuration (M8) | One maintained YAML parser | go-yaml moved to the YAML organization in 2025; check its current module path when adding it |
 | Terminal interface | Decided in open decision 2, at the walking skeleton | |
-| macOS Keychain | Decided in open decision 8 | |
+| macOS Keychain and socket owners (open decisions 5 and 8) | `github.com/ebitengine/purego` (Apache-2.0) | macOS only, used only from `credstore` and the listener check. It calls system libraries without cgo by relying on Go runtime internals that the Go team keeps reachable for it, so a Go upgrade could break it. It's pinned, and every Go upgrade runs the macOS tests before it's merged. It imports no process-starting code |
 
 Not used:
 - `openai-go`: OpenAI-compatible endpoints use plain HTTP (see below and open decision 11).
@@ -236,6 +236,7 @@ Checks:
 - Files are created with owner-only permissions on each operating system.
 - Retention and cleanup: session files removed at session end or maximum age; local logs removed only after confirmed upload plus the retention period.
 - Each `credstore` backend round-trips a secret, and "sign in each session" stores nothing.
+- On macOS, a signed build reads Keychain items stored by the previous signed build without a prompt, and the build contains no cgo (`CGO_ENABLED=0`).
 - `hermit purge` removes every local file and credential store entry for the user; files left without their key are unreadable.
 
 ### Milestone 3: File access guard
@@ -533,6 +534,12 @@ Prerequisites P1–P12 are organizational. Milestone 14's documentation covers t
 3. **Which source control host comes first** for milestone 9. **Decided:** GitHub, so the team can use Hermit's MR features on Hermit's own repository, then GitLab straight after, for the first pilot organization. The first source control adapter is otherwise chosen by the pilot's host, not by where Hermit is hosted.
 4. **Which provider comes first** for the first usable build (assumed the Claude API).
 5. **Listening-process checks on macOS and Windows** (milestone 7). Linux exposes socket owners through `/proc`, and Windows through `GetExtendedTcpTable`, which Go can call without cgo. macOS has no simple Go API; the usual libraries run `lsof`, which would break the rule that only `gitcmd` runs a process, and cgo would complicate reproducible builds. The options are native system calls without cgo (Go can call libSystem functions such as `proc_pidinfo` the way its runtime does, at the cost of some low-level code), or a second, narrowly listed exception to the process rule (`lsof` with fixed arguments). Recommendation: try native calls first, and if they prove impractical, ship local-only classes on Linux and Windows first rather than weaken the rule.
+
+   **Decided, after a feasibility check** (November 2026, macOS 27.2 on Apple silicon, Go 1.27, `CGO_ENABLED=0`): native calls through `purego` work.
+   - **The check:** a helper process listened on a loopback port, and a test program connected to it. Using `proc_listallpids`, `proc_pidinfo` and `proc_pidfdinfo`, the program found the process on the other end of its own connection, then got that process's executable path with `proc_pidpath`.
+   - **Speed:** a full scan of about 670 processes took about 4 ms.
+   - **Other users' processes:** about 200 of them, mostly the system's, couldn't be inspected without root. They count as unidentified, so they're refused, which is what M23 asks.
+   - **Struct layouts:** the code reads libproc's structures at fixed offsets, so a macOS CI test compiles a small C program against the SDK headers and checks those offsets, catching a change in a new macOS release.
 6. **How `fsguard` decides whether a file is git-ignored.** This matters because ignored files are unreadable by default (M13). The options:
    - **Ask git** (`git check-ignore --stdin -z`): always matches git's behavior, including global and per-repository exclude files, but runs a process, which `fsguard` is meant to avoid.
    - **Reimplement gitignore matching:** keeps `fsguard` self-contained, but can drift from git's behavior, and a mismatch could make an ignored file readable.
@@ -540,6 +547,12 @@ Prerequisites P1–P12 are organizational. Milestone 14's documentation covers t
    Recommendation: ask git through `internal/gitcmd`, which gives `fsguard` the answers, so `fsguard` itself still runs no processes. Hermit already requires git (M18). If git is unavailable or returns an error, treat the file as ignored, so the failure refuses rather than allows. Test against a corpus of gitignore cases to confirm the answers match git.
 7. **Format of the AWS setup templates** (milestone 8, for P5): CloudFormation, CDK or Terraform. CloudFormation needs no extra tooling in an AWS-only organization; Terraform suits organizations that already manage AWS with it. Shipping one and documenting the resources well enough to translate may be enough.
 8. **The macOS Keychain without cgo or running a program** (milestone 2). The common Go libraries either run `/usr/bin/security`, which breaks the process rule, or need cgo, which complicates reproducible builds. This is the same problem as open decision 5, and it is on the critical path. Windows Credential Manager and the Linux kernel keyring are reachable through system calls, and libsecret through D-Bus, without either. The options are the same as in decision 5: call Security.framework through libSystem-style trampolines without cgo, or accept cgo for the macOS build only and confirm the build stays reproducible. Recommendation: decide at the start of milestone 2, together with decision 5, since both need the same low-level calling code.
+
+   **Decided, after the same feasibility check:** `purego` reaches the Keychain without cgo.
+   - **The check:** a program built with `CGO_ENABLED=0` added a generic password to the login Keychain with `SecItemAdd`, read it back with `SecItemCopyMatching`, and deleted it, through Security.framework and CoreFoundation.
+   - **Not yet tested:**
+     - Keychain access is tied to the program's code signature, so a rebuilt, differently signed copy should get a Keychain prompt for items an earlier copy stored. Signed releases with a stable signing identity keep access across upgrades. Milestone 2 tests both cases on a signed build.
+     - The headless Linux and Windows backends.
 9. **The edit tool's format** (milestone 5). Options include replacing an exact, unique piece of existing text, applying a unified diff, or rewriting a whole file. The choice decides how often edits fail to apply, and how edits map onto text the model saw altered (M3). Recommendation: exact-text replacement, which current models use reliably, and which maps directly to the M3 rule: the text being replaced must appear in the model's view, and must not overlap anything redacted or removed. Confirm with the spike's findings.
 10. **How developers sign in to Bitbucket Cloud** (Bitbucket support). Bitbucket Cloud documents no device sign-in. Its OAuth authorization code flow needs a browser that can reach a callback on the developer's machine, which fails on headless and remote development machines. It may also need a client secret, which can't go in the policy (M14.2). The alternative is a scoped API token that each developer creates and enters. Recommendation: API tokens, with `hermit doctor` checking their scopes. Revisit OAuth if Atlassian adds device sign-in, or confirms a flow without a client secret.
 11. **OpenAI's own API: Chat Completions or the Responses API** (milestone 7). The OpenAI-compatible adapter speaks Chat Completions, which local servers and most gateways implement, so it also works with OpenAI's own API. But OpenAI recommends its newer Responses API for reasoning models. With Chat Completions, a reasoning model's reasoning isn't carried between turns, which can weaken multi-step tool use, and some newer OpenAI models are offered only through the Responses API. A Responses adapter has its own data-handling rules:
