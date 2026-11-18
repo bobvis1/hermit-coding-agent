@@ -58,7 +58,7 @@ A developer determined to go around the tool can always find a way. The realisti
 | Hidden content in writes | Agent writes a binary file, a minified blob or a very long line that the IDE diff can't show meaningfully | Hard-to-review writes refused by default (M6) |
 | Exposure through history or snapshots | A secret removed long ago is still in git history; snapshots stored as git refs are pushed with `git push --mirror` | No history access (M1); snapshots kept outside the repository and limited to files the agent changes (M3) |
 | Human rubber-stamping | Developer commits everything unread near a deadline | A careless commit reaches only a branch and an MR that another human reviews, not the developer's machine or other systems |
-| Data sent to the wrong provider or region | A restricted repository is worked on with a cloud model; a cross-region inference profile sends requests abroad; Bedrock invocation logging keeps copies of every prompt | Data classes by repository, with unknown repositories most restricted (M23); models approved as specific IDs or profiles (M17); invocation logging off or controlled (P5); provider terms confirmed before approval (P4) |
+| Data sent to the wrong provider or region | A restricted repository is worked on with a cloud model; a cross-region inference profile sends requests abroad; Bedrock invocation logging keeps copies of every prompt | Data classes by repository, with unknown repositories most restricted (M23); models approved as specific IDs or profiles (M17); invocation logging off or controlled (P11); provider terms confirmed before approval (P4) |
 | Misuse of the source control token, and injection through the host | An injected instruction tries to read another project, merge or approve an MR, or delete a branch; an MR comment from an outside contributor carries instructions to the model; a CI summary leaks a masked secret | Fixed calls only, current project only, fixed branch rules, no merge, approval, label or comment actions (M24); MR diffs follow the repository's read rules; host content scanned and treated as untrusted (M19, M20, M24) |
 | Credential reuse in other tools | Developer copies the model API key or Bedrock credentials from their machine and points an unrestricted agent at it | Organization model gateway: provider keys never reach laptops, short-lived SSO tokens, device certificates, request-shape checks, central logging and a kill switch (M17); without a gateway, cross-checks of provider records against Hermit's logs (M16) |
 | Log tampering by the developer | Developer deletes the end of the local log before upload, or edits it | Hash chain; chain head anchored off the machine as the session runs; cross-checks against gateway or provider records (M16); Object Lock after upload |
@@ -194,6 +194,7 @@ Logs are written locally first and then uploaded (M16). A local log alone can be
 **M13. Files the agent cannot read.** Anything the agent reads is sent to the model API, so the harness refuses to read files that must never leave the developer's machine. The default list covers `.env*`, private keys and certificates (`*.pem`, `*.key`, `id_*`), and credential files. Each repository can add to it, for example data directories that hold restricted or regulated data, in `.agentignore` (M8). Search results never include these files' contents.
 - **Files git ignores are unreadable by default.** Ignored files are mostly local configuration, data dumps and build output, where sensitive content collects. The test results path (M15) is the exception. Organization policy, and only organization policy, can allow named ignored folders, such as dependency directories (`node_modules/`, `.venv/`, `vendor/`) whose library source helps the agent. Repositories cannot, because this loosens a restriction.
 - **Names are hidden too.** A file name can itself be data, such as `data/patients/<name>.csv`. Unreadable files don't appear in listings, search results or the change summaries the model sees. A request for one by name gets a generic "not available" that doesn't confirm whether it exists. The developer's audit log (M10) still records the refusal.
+- **Optional read allowlist.** A repository, a data class (M23) or the organization can list the only places the agent may read, for example `src/**` and `tests/**`. Everything else is treated as unreadable, names included. This suits repositories that sit next to sensitive data, such as clinical analytics code. It only adds restrictions, so repositories can set it themselves.
 
 Reading by file name is coarse: sensitive content also turns up in test fixtures, notebooks with saved output, local config files and test failures. Content scanning (M19) covers what file rules miss.
 
@@ -215,7 +216,9 @@ The policy covers at least:
 | Log destination | None; must be set | Amazon S3 (M16), the model gateway's log (M17), or local only, which is not a reliable audit trail (M10) |
 | Local file retention | A few days after confirmed upload; session files cleaned up at session end | For local logs and session files on developer machines (M10) |
 | Model provider | None; must be set | Claude API, Amazon Bedrock, OpenAI-compatible, or an organization gateway (M17), plus the approved models as specific IDs or inference profiles. A gateway is recommended for production |
-| Data classes | One class for all repositories | Repository patterns mapped to classes, and the providers and models each class may use. Local-only classes name the approved local server programs. Unmatched repositories get the most restrictive class (M23) |
+| Data classes | One class for all repositories | Ranked classes, each a bundle of settings (providers, approved features, log tiers and destination, scanning, read and write allowlists, pending-changes mode), and repository patterns mapped to them. Local-only classes name the approved local server programs. Unmatched repositories get the most restrictive class (M23) |
+| Provider features | None approved | Features such as prompt caching, approved per data class. Approve prompt caching wherever terms allow (M17) |
+| Read allowlist | None | The only paths the agent may read; set by the organization, a data class or a repository (M13) |
 | Managed-device marker | None | MDM marker that makes a missing policy stop the harness (M18). Organization builds have it built in |
 | Minimum harness version | None | Older versions refuse to run (M18) |
 | Protected and unreadable paths | The defaults in M8 and M13 | The organization can add to them |
@@ -229,7 +232,7 @@ The policy covers at least:
 | Pending-changes mode | Off | Agent changes held outside the working tree until the developer applies them (M22) |
 | Source control host | None; must be set | Host URL and API type, and how developers obtain a token. Use the narrowest token the host offers (M24) |
 | Allowed MR target branches | The default branch | Other branches MRs may target (M24) |
-| Network | System settings | HTTPS proxy and extra CA certificates, often needed for self-hosted hosts and inspecting proxies |
+| Network | System settings | HTTPS proxy and extra CA certificates, often needed for self-hosted hosts and inspecting proxies. Inspecting proxies must exempt model endpoints or follow the logging rules (P11) |
 | Usage limits | None | Tokens or spend per developer per day, and per session |
 | Enabled | On | Set to off to stop the harness everywhere the policy reaches (section 12) |
 | Sensitive paths | None | Paths whose changes are pointed out in phase summaries (M4). Keep the list short |
@@ -252,6 +255,7 @@ IDE test runners (Eclipse's JUnit view, VS Code's Test Explorer) usually show re
 Developers run agent-written tests before or after reviewing them, as they would a colleague's branch. Guidance to developers is to review agent changes before running them, as before committing them, not to avoid running tests.
 
 **M16. Central log storage on Amazon S3 (organization option).** When organization policy selects S3:
+- **Destination per data class.** Each data class (M23) can name its own bucket and region. Audit details, escrow and transcripts can contain the same data the class protects, so the class's residency rules apply to logs as well as to model requests.
 - **Batched upload.** The harness appends events to the local log (M10) and uploads compressed chunks every few minutes and at session end. Failed uploads stay queued locally and are retried, including at the next start.
 - **Write-only, short-lived credentials.** Developers sign in through IAM Identity Center. The role can only call `s3:PutObject` under that developer's own prefix. It has no read, list or delete permission, and there are no long-lived access keys. The harness holds the credentials, and the agent cannot use them because it has no shell.
 - **Tamper evidence.** Each event includes a hash of the previous one, so gaps and edits are detectable. The bucket uses versioning and S3 Object Lock.
@@ -260,14 +264,14 @@ Developers run agent-written tests before or after reviewing them, as they would
   - **Audit details, escrow and transcripts** use governance mode. It still stops developers, but named administrators with explicit permission can delete them to clean up a spill.
 - **Audit details, escrow and transcripts can be erased.** Each session's records in these tiers are encrypted with their own data key, and the keys are kept in separate storage that can be deleted. Deleting a session's key makes those records permanently unreadable, even while Object Lock keeps the encrypted objects (crypto-shredding). This is a common way to combine immutable logs with erasure requests and spill cleanup. Whether it meets a particular legal erasure requirement is a question for the organization's privacy office.
 - **Anchored chain head.** A hash chain cannot show that its end was cut off: a developer could delete the last part of the local log before it is uploaded. So the harness records the session ID, event number and current chain hash off the machine as it goes. With a gateway (M17), it sends them with every model request and the gateway records them. Without one, it uploads them to S3 as a small separate object about every minute. The uploaded log must reach at least the last anchored point, or the gap is reported.
-- **Cross-checks against server-side records.** Scheduled checks compare Hermit's sessions with records the developer cannot alter: the gateway's request log, or without a gateway the provider's own records (CloudTrail for Bedrock, which records that calls happened without their content, or usage per API key in the provider's console). Bedrock model invocation logs are not used, because they copy content (P5). Model usage with no matching Hermit session, and sessions whose logs stop short of their anchor, raise an alert.
+- **Cross-checks against server-side records.** Scheduled checks compare Hermit's sessions with records the developer cannot alter: the gateway's request log, or without a gateway the provider's own records (CloudTrail for Bedrock, which records that calls happened without their content, or usage per API key in the provider's console). Bedrock model invocation logs are not used, because they copy content (P11). Model usage with no matching Hermit session, and sessions whose logs stop short of their anchor, raise an alert.
 - **Encryption and access.** SSE-KMS with a dedicated key. The bucket policy rejects non-TLS requests and unencrypted uploads, and Block Public Access is on. Audit details, escrow and transcripts each go under a separate prefix with their own KMS key and tighter decryption access than audit events. The organization hashing key (M10) is a separate KMS key, usable only by investigators.
 - **Querying.** Logs are partitioned by date for querying with Athena, which costs nothing until someone runs a query.
 - **Cost.** Storage cost is small. A rough estimate for 50 developers, a few sessions a day and a couple of megabytes per transcript is about 15 GB a year compressed, or under 100 GB over five years. Lifecycle rules can move older logs to a Glacier storage class, and Object Lock still applies there. The real decision is whether to keep transcripts at all, and for how long, which is why they are off by default and have their own shorter retention (M14).
 - **Optional upgrades.** Kinesis Data Firehose in front of S3 for near-real-time delivery or very large volumes, and CloudWatch Logs for alerting (for example, on repeated protected-path refusals).
 
 **M17. Model providers.** The harness owns the agent loop and every tool. It talks to models through a small provider interface, whose adapters only translate messages, tool definitions, tool calls and tool results. Every rule in this document is enforced in the harness, so it applies the same way whichever model is used. Organization policy selects a provider and lists the approved models.
-- **Provider-specific features** such as prompt caching or extended reasoning are used when a provider offers them, never required.
+- **Provider features are off unless approved.** Features such as prompt caching, extended reasoning, batch processing or file storage are used only where organization policy approves them for the data class (M23). Agreements such as a BAA or zero data retention often cover only named services and features, and some features involve the provider keeping data. The harness never requires a feature to work. Prompt caching makes a large difference to cost and speed, so organizations should approve it wherever their terms allow rather than leave it off by default.
 - **Each model is evaluated before approval.** Models differ in how reliably they call tools, follow a plan and keep phases small. The project ships an evaluation suite that organizations run before adding a model to the approved list.
 - **Data residency.** Approved models are listed as specific model IDs or inference profiles, and the harness refuses anything else. Bedrock cross-region inference profiles send requests to other regions, some within one geography and some much more widely, so they must be approved explicitly. Where other providers offer regional endpoints, the policy names the endpoint. AWS GovCloud endpoints are supported for Bedrock and the other AWS services the harness uses (M16).
 - **Each provider needs its own data-processing approval** (P4) and its own credential, held by the harness (M2).
@@ -343,11 +347,27 @@ So an agent edit can run on the developer's machine, with their credentials and 
 - **Protected IDE configuration (default).** The agent cannot change IDE settings or launch files (M8), so it cannot turn these features back on.
 - **Pending-changes mode (organization option, off by default).** The agent's changes for each phase are held outside the working tree, where the IDE cannot see them. The developer reviews the diff, as text in the terminal or as a patch opened in the IDE, and then applies it. Nothing the agent writes can run until a person has seen it. This costs convenience (no editing in place, and an extra step for every phase), so it is for organizations whose security review cannot accept the residual risk.
 
-**M23. Data classes by repository.** Not every repository can use every provider. Organization policy defines data classes and maps repositories to them. Each class lists the providers and models it may use, for example "public: any approved model", "internal: the gateway", "restricted: the local model only, or no model at all". Export-control rules, such as ITAR, are usually expressed this way.
+**M23. Data classes by repository.** Not every repository should be handled the same way. Organization policy defines data classes and maps repositories to them, for example "public", "internal" and "clinical". A class is a bundle of settings that apply together, on top of the organization's defaults. Export-control rules, such as ITAR, and health-data rules are usually expressed this way.
+
+A class can set:
+
+| Setting | Example for a clinical analytics class |
+|---|---|
+| Providers, models and endpoints (M17) | The gateway only, or a local model only |
+| Provider features (M17) | Only those approved for this class |
+| Log tiers and session resume (M10) | Transcripts forced off, escrow on, session resume off |
+| Log destination (M16) | A bucket in an approved region |
+| Content scanning (M19) | Block rather than redact, with health-data detectors on |
+| Read allowlist (M13) | Only `src/**` and `tests/**` can be read |
+| Write allowlist (M8) | The same paths |
+| Pending-changes mode (M22) | Required |
+| Sensitive paths (M4) | Class-specific additions |
+
+- **Classes are ranked.** The organization lists its classes from least to most restrictive. "Most restrictive" below means the last class in that list. Comparing bundles of settings automatically would be error-prone.
 - **Local-only classes verify the listener.** A class that requires a local model names the approved local server programs (for example Ollama). Before sending anything, the harness checks which process is listening on the loopback port, using the operating system's connection tables. If the listener is `ssh`, a VS Code tunnel, or anything it cannot identify as an approved server, it refuses. On a remote development machine, "local" means that machine, and the organization decides whether the machine's location meets the class's residency rules.
 - **Repository identity.** The harness identifies a repository by its git remote URL, matched against patterns in the policy. A developer can change a remote in seconds, so a repository that matches no pattern gets the most restrictive class, never the least. Disguising a repository as a less restricted one is deliberate circumvention, which the logs (M10) and gateway records show.
-- **Enforced at the gateway too.** With a gateway (M17), the harness sends the repository identity with each request, and the gateway applies the same mapping on the server.
-- **Shown to the developer.** The harness shows the repository's class at startup, so a developer knows which models are in use and why.
+- **Enforced at the gateway too.** With a gateway (M17), the harness sends the repository identity and class with each request, and the gateway applies the same mapping, providers, features and logging rules on the server.
+- **Shown to the developer.** The harness shows the repository's class at startup, with a short summary of what it changes, so a developer knows which models are in use and why some features are off.
 
 **M24. Source control access.** The agent never sees the source control token (M2), but the harness holds it, and host tokens are coarse. A GitLab token with the `api` scope, for example, can read every project the developer can see, and can merge, approve and delete branches. So the harness limits itself:
 - **Fixed calls only.** The harness's source control client implements a fixed list of calls: read the current project; list and read its MRs and their comments; read test reports and failure summaries from its pipelines; and create or update an MR's title and description after exact-text approval (M20). There is no general way to call the host's API, so a prompt injection has nothing to steer.
@@ -397,13 +417,17 @@ These aren't features of the tool, but the design depends on them:
   - where requests are processed and stored.
 
   The policy can record which terms were approved, for the audit trail, but the guarantee comes from the contract.
-- **P5.** If logs go to S3 or the model provider is Bedrock: an AWS account with IAM Identity Center, the log bucket and KMS keys set up as in M16, Bedrock model access enabled for the approved models, and a role limited to those permissions. **Bedrock model invocation logging**, if turned on in the account, copies every prompt and response to CloudWatch or S3, outside Hermit's retention, encryption and erasure rules. It is either off, or placed under the same controls as transcripts (M16). `hermit doctor` (S3) reports the setting when the role is allowed to read it.
+- **P5.** If logs go to S3 or the model provider is Bedrock: an AWS account with IAM Identity Center, the log bucket and KMS keys set up as in M16, Bedrock model access enabled for the approved models, and a role limited to those permissions.
 - **P6.** Repositories write JUnit XML test reports from their build tool (M15).
 - **P7.** Restricted and regulated data, and real credentials, are kept out of source repositories, including test fixtures and saved notebook output. File rules (M13) and content scanning (M19) are a backstop for mistakes, not a substitute.
 - **P8.** Developers are not local administrators on the machines where the harness runs. The local controls (a policy the developer cannot change, protected files, the local log before upload) hold only for developers without admin rights. Where developers are administrators, those controls depend on the developer's good faith, and the server-side controls (the model gateway in M17 and the log checks in M16) are what remain.
 
 - **P9.** CI runs static analysis (SAST) and secret scanning on every branch that agent-written code reaches. These are the deep checks for subtle bugs and planted weaknesses that review can miss.
 - **P10.** Before production use, the harness gets an independent penetration test, repeated for major releases. Once the agent has no shell, the harness is the security boundary and needs the testing a boundary gets.
+- **P11.** Everything between the developer and the model that can record prompts follows the data class's logging rules (M10, M23). Otherwise it keeps a copy of everything the harness was told not to keep. This covers:
+  - **the model gateway's own log** (M17), which keeps metadata only unless the class allows transcripts, and then applies the same retention and erasure;
+  - **provider-side logging**, such as Bedrock model invocation logging, which copies every prompt and response to CloudWatch or S3 if turned on in the account. It is either off, or placed under the same controls as transcripts (M16). `hermit doctor` (S3) reports the setting when the role is allowed to read it;
+  - **HTTPS-inspecting proxies**, which can see and log full prompts. Model endpoints are exempted from inspection, or the proxy's logs are brought under the same controls.
 
 ## 9. Success measures
 
@@ -481,7 +505,7 @@ What each party provides to get the tool running. Nothing in the organization or
 | Setting | Contents |
 |---|---|
 | Extra CA certificates | Internal certificate authorities used by self-hosted hosts or inspecting proxies |
-| HTTPS proxy | When outbound traffic must go through one |
+| HTTPS proxy | When outbound traffic must go through one. If it inspects HTTPS, exempt model endpoints or bring its logs under the same controls (P11) |
 
 **Defaults to review**
 
@@ -496,6 +520,7 @@ What each party provides to get the tool running. Nothing in the organization or
 | Breach scoping for unrebuildable content | Worst-case scoping (escrow recommended where breach-notification law applies) |
 | Local file retention | A few days after confirmed upload |
 | Data classes | One class for all repositories; unmatched repositories get the most restrictive class (M23) |
+| Provider features, read allowlist | None approved, none |
 | Allowed MR target branches | The default branch (M24) |
 | Extra protected and unreadable paths | None beyond M8 and M13 |
 | Readable git-ignored folders | None |
@@ -544,16 +569,36 @@ Illustrative only; the final format is settled during implementation. This examp
     }
   },
   "data_classes": {
+    "ranking": ["internal", "clinical", "restricted"],
     "classes": {
-      "internal": { "providers": ["bedrock"] },
+      "internal": {
+        "providers": ["bedrock"],
+        "approved_features": ["prompt_caching"]
+      },
+      "clinical": {
+        "providers": ["bedrock"],
+        "approved_features": [],
+        "logging": {
+          "tiers": { "audit_details": true, "transcripts": false },
+          "breach_scoping": "escrow",
+          "session_resume": false,
+          "s3": { "bucket": "example-hermit-logs-clinical", "region": "us-east-1" }
+        },
+        "scanning": { "secrets": { "on_read": "block" }, "personal_data": true, "health_detectors": true },
+        "read_allowlist": ["src/**", "tests/**"],
+        "write_allowlist": ["src/**", "tests/**"],
+        "pending_changes_mode": true
+      },
       "restricted": {
         "providers": ["openai_compatible"],
         "endpoint": "http://localhost:11434/v1",
-        "approved_local_servers": ["ollama"]
+        "approved_local_servers": ["ollama"],
+        "approved_features": []
       }
     },
     "repositories": [
       { "remote": "gitlab.example.org/restricted/**", "class": "restricted" },
+      { "remote": "gitlab.example.org/clinical/**", "class": "clinical" },
       { "remote": "gitlab.example.org/**", "class": "internal" }
     ],
     "unmatched": "restricted"
