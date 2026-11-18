@@ -77,6 +77,7 @@ These are real threats, but this tool does not try to defend against them. Each 
 - **Reviewers who approve without reading, or collude.** MR review (P3) is the last human check. If it fails, this tool cannot replace it.
 - **A compromised Hermit release.** Signed, reproducible builds and organization signing (M18) reduce this risk; the organization's software intake process covers the rest.
 - **Physical theft of a device.** Covered by the organization's device policies, such as disk encryption and remote wipe.
+- **Terminal history.** Text the harness displays can persist in the terminal's own scrollback, logs or restored sessions. The harness reduces this (M20) but cannot clean up another program's history.
 - **Persuasive but wrong explanations.** The model can explain wrong code convincingly. Small phases (M4), review in the IDE (M5) and MR review reduce this, but no tool can guarantee that a reviewer isn't persuaded.
 
 ## 6. Tasks in scope
@@ -109,6 +110,8 @@ These are real threats, but this tool does not try to defend against them. Each 
 
 The agent never commits or pushes. The developer does both.
 
+**No images.** The agent does not accept images or screenshots in version 1, from the developer or from files. Text extraction from images is too unreliable to scan for sensitive data.
+
 **No git history.** The agent cannot read git history (no log, show or blame). History reopens what the read rules close: secrets removed from the current version are still there, and renamed paths escape `.agentignore`. If history access is added later, the current read rules (M13), path rules (M21) and scanning (M19) must apply to every historical path and version.
 
 **M2. No shell, network or credentials.** The agent has no shell, no general network access, and never sees a credential. The harness holds the source control host token, the model credential and the log upload credential, and uses each only for its fixed purpose.
@@ -131,9 +134,10 @@ The agent never commits or pushes. The developer does both.
 **M6. Writes must be reviewable.** IDE diffs cannot meaningfully show some content, so the harness refuses, by default, writes that contain:
 - binary data;
 - very long lines (over 500 characters by default);
-- long base64-like or minified runs of text, detected by length and randomness.
+- long base64-like or minified runs of text, detected by length and randomness;
+- notebook outputs: a Jupyter notebook (`.ipynb`) that contains cell outputs.
 
-Organization or repository configuration can allow named paths, such as test fixtures, where these are expected.
+Organization or repository configuration can allow named paths, such as test fixtures, where these are expected. Notebook outputs are never allowed.
 
 **M7. Tests.** The agent can write and update tests. The developer runs them locally, and CI runs them on push. The agent reads the results (M15 and M1) but does not run tests itself.
 
@@ -194,6 +198,8 @@ Logs are written locally first and then uploaded (M16). A local log alone can be
 **M13. Files the agent cannot read.** Anything the agent reads is sent to the model API, so the harness refuses to read files that must never leave the developer's machine. The default list covers `.env*`, private keys and certificates (`*.pem`, `*.key`, `id_*`), and credential files. Each repository can add to it, for example data directories that hold restricted or regulated data, in `.agentignore` (M8). Search results never include these files' contents.
 - **Files git ignores are unreadable by default.** Ignored files are mostly local configuration, data dumps and build output, where sensitive content collects. The test results path (M15) is the exception. Organization policy, and only organization policy, can allow named ignored folders, such as dependency directories (`node_modules/`, `.venv/`, `vendor/`) whose library source helps the agent. Repositories cannot, because this loosens a restriction.
 - **Names are hidden too.** A file name can itself be data, such as `data/patients/<name>.csv`. Unreadable files don't appear in listings, search results or the change summaries the model sees. A request for one by name gets a generic "not available" that doesn't confirm whether it exists. The developer's audit log (M10) still records the refusal.
+- **Binary and container files are unreadable by default.** Content scanning (M19) works on text, so it can't see inside DICOM images, spreadsheets, Parquet, SQLite, archives such as ZIP, or PDFs, which health repositories often hold (for example a data dictionary spreadsheet with sample rows). The harness recognizes these by their content, not only their file extension, so renaming a file doesn't get around the rule. Organizations can allow specific types later if suitable text extractors are added.
+- **Notebook outputs are removed on read.** Saved outputs in Jupyter notebooks (`.ipynb`) are a common way sensitive data leaks. The agent sees only code and markdown cells: cell outputs, embedded images and widget state are removed before anything is sent to the model.
 - **Optional read allowlist.** A repository, a data class (M23) or the organization can list the only places the agent may read, for example `src/**` and `tests/**`. Everything else is treated as unreadable, names included. This suits repositories that sit next to sensitive data, such as clinical analytics code. It only adds restrictions, so repositories can set it themselves.
 
 Reading by file name is coarse: sensitive content also turns up in test fixtures, notebooks with saved output, local config files and test failures. Content scanning (M19) covers what file rules miss.
@@ -226,6 +232,9 @@ The policy covers at least:
 | Content scanning (M19) | Secrets on; redact reads, refuse writes and MR text | Can switch reads to block |
 | Organization data patterns | None | Precise patterns for the organization's own identifiers (M19) |
 | Personal-data detection | Off | Generic detectors, opt-in (M19) |
+| Health pack | Off | HL7v2, FHIR, DICOM and national health ID detectors, opt-in per organization or data class (M19) |
+| Pastes | Allowed after confirmation when scanning finds something | Per data class: allowed, confirm, or off (M19) |
+| Test and CI output detail | Full | Per data class: full, summary, or names only (M15) |
 | Allowed image and link domains | The source control host only | For images and links in MR text and markdown files (M20) |
 | Paths allowing hidden or bidirectional characters | None | For example locale or translation files (M20). Organization only, because this loosens a restriction |
 | Require a write allowlist | Off | Every repository must define where the agent may write (M8) |
@@ -244,6 +253,10 @@ The policy covers at least:
 **M15. Reading test results.** The developer runs tests, in their IDE or terminal, as they normally would. The agent reads the results through a fixed, read-only action:
 - **Standard reports.** The action reads JUnit XML reports, which most build tools write to a directory that is already gitignored (Maven `target/surefire-reports/`, Gradle `build/test-results/`, pytest `--junitxml`, JUnit reporters for Jest and Mocha). The results path is set in repository configuration the agent cannot edit, with defaults for common build tools.
 - **Structured summary.** The agent receives which tests failed, assertion messages and stack traces, not raw console output.
+- **Detail level per data class.** Assertion messages can contain data (`expected Patient(name=...)`). Each data class (M23) sets how much of test and CI output reaches the model:
+  - **full:** failure messages and stack traces (default);
+  - **summary:** test names, exception types and file locations, without assertion messages or values;
+  - **names only:** which tests failed.
 - **Freshness.** The harness compares the report's time with the agent's last change (M3). If the developer hasn't rerun the tests since, it marks the results as stale.
 - **Read-only.** The agent cannot write to the results path, so results in the log always come from a real run.
 - **Output reaches the model.** Failure messages are sent to the model API, so tests must not print restricted data. M13 applies to the results path, and transcripts, if turned on (M10), record what the model saw.
@@ -310,8 +323,9 @@ Choosing a provider is configuration, not a separate implementation.
 - **Secrets: always on.** Known token formats, private key blocks, connection strings with passwords, and high-entropy values assigned to names like `password` or `token`. Detection of this kind is accurate enough not to cause alert fatigue.
 - **Organization patterns: optional.** The organization supplies precise patterns for its own sensitive identifiers, such as record or study ID formats.
 - **Personal-data detection: optional, off by default.** Generic detectors (for example national ID numbers, or card numbers that pass a checksum) are opt-in. Broad detection of names, dates and addresses is noisy in ordinary code and test fixtures, and constant false alarms would push developers to unrestricted tools.
+- **Health pack: optional, off by default.** Structured health data can be matched with few false positives, so it ships as a separate opt-in pack that the organization or a data class (M23) can turn on: HL7v2 patient segments (such as `PID|` and `NK1|`), FHIR `Patient` resources containing identifiers, DICOM content (the `DICM` marker at byte 128), and national health identifiers with check digits (such as the NHS number and the Australian IHI). The pack catches structured health data only. Free-text clinical notes need personal-data detection or a read allowlist (M13).
 - **What happens on a match.** Content going to the model is redacted by default (the match is replaced with a marker naming its type, so the agent can keep working), or blocked entirely if policy says so. A file write containing a match is refused. MR text containing a match is never sent to the host.
-- **Developer pastes.** The harness can't stop a developer typing something, but it scans pastes and asks for confirmation before sending anything that matches.
+- **Developer pastes.** Pastes are the most likely way sensitive data arrives: a production stack trace or a support ticket pasted in to debug it. They pass through the class's full scanning, including the health pack where it is on. Each data class (M23) chooses whether pastes are allowed, allowed after a confirmation that shows what scanning found, or off, in which case the developer describes the problem instead. The harness can't stop a developer from typing something, but it controls what a paste does.
 - **Logged without the value.** Each match is logged (M10) with its type and location, never the matched text.
 
 Scanning is a backstop, not a guarantee. It reduces the chance of sensitive content reaching the model or the host, but it can miss things. The primary control is keeping restricted data out of repositories (P7).
@@ -321,6 +335,7 @@ Scanning is a backstop, not a guarantee. It reduces the chance of sensitive cont
 - **Markdown files the agent writes.** Source control hosts can render `.md` files in the MR's diff view, which fetches their images the same way. A write that adds an image from a domain that isn't allowed is refused.
 - **The developer approves the exact MR text.** Before any MR description or update is sent, the harness shows the exact text, unrendered and with every URL visible, and sends it only after the developer approves. Reviewers read the description as the author's explanation, so the developer should stand behind it (principle 3).
 - **Escape sequences are stripped.** Terminal escape sequences can rewrite the screen to hide part of a diff or plan, and OSC 8 hyperlinks can hide a URL behind innocent text. Everything the harness displays (the model's replies, file excerpts, diffs, test output and CI summaries) has escape sequences removed. Only the harness's own formatting is allowed, and hyperlinks are shown as plain text with the URL visible.
+- **Leave less behind in the terminal.** Anything shown on screen can persist in terminal scrollback, terminal logs, multiplexer history (such as tmux) and restored sessions (such as VS Code's persistent terminals), outside the harness's encryption. So the harness runs in the terminal's alternate screen, as full-screen terminal programs do, which most terminals keep out of scrollback. Anything scanning redacted for the model is also masked on screen. For sensitive data classes, guidance is to turn off terminal logging, persistent terminal sessions and long scrollback. This reduces the problem but doesn't remove it, because terminals differ.
 - **Invisible and bidirectional characters.** Unicode tag characters and bidirectional override and isolate controls can hide code from reviewers (as in the Trojan Source attack) or smuggle data and instructions.
   - **In writes,** these characters are refused in code by default. Other zero-width characters are flagged in the change summary. They have legitimate uses, such as right-to-left languages in translation files and zero-width joiners in emoji, so organization policy can allow them in named paths, such as locale files.
   - **In reads,** repository content can use them to hide instructions to the model that the developer can't see. Content sent to the model has tag characters removed, and the developer is told when a file contained hidden characters.
@@ -357,7 +372,9 @@ A class can set:
 | Provider features (M17) | Only those approved for this class |
 | Log tiers and session resume (M10) | Transcripts forced off, escrow on, session resume off |
 | Log destination (M16) | A bucket in an approved region |
-| Content scanning (M19) | Block rather than redact, with health-data detectors on |
+| Content scanning (M19) | Block rather than redact, with personal-data detection and the health pack on |
+| Pastes (M19) | Off |
+| Test and CI output detail (M15) | Summary only |
 | Read allowlist (M13) | Only `src/**` and `tests/**` can be read |
 | Write allowlist (M8) | The same paths |
 | Pending-changes mode (M22) | Required |
@@ -525,7 +542,8 @@ What each party provides to get the tool running. Nothing in the organization or
 | Extra protected and unreadable paths | None beyond M8 and M13 |
 | Readable git-ignored folders | None |
 | Content scanning | Secrets on; redact reads, refuse writes and MR text |
-| Organization data patterns, personal-data detection | None, off |
+| Organization data patterns, personal-data detection, health pack | None, off, off |
+| Pastes, test and CI output detail | Confirm when scanning finds something, full |
 | Allowed image and link domains | The source control host only |
 | Paths allowing hidden or bidirectional characters | None |
 | Require a write allowlist, pending-changes mode | Off, off |
@@ -584,7 +602,9 @@ Illustrative only; the final format is settled during implementation. This examp
           "session_resume": false,
           "s3": { "bucket": "example-hermit-logs-clinical", "region": "us-east-1" }
         },
-        "scanning": { "secrets": { "on_read": "block" }, "personal_data": true, "health_detectors": true },
+        "scanning": { "secrets": { "on_read": "block" }, "personal_data": true, "health_pack": true },
+        "pastes": "off",
+        "test_output_detail": "summary",
         "read_allowlist": ["src/**", "tests/**"],
         "write_allowlist": ["src/**", "tests/**"],
         "pending_changes_mode": true
