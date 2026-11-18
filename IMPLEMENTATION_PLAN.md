@@ -86,7 +86,8 @@ Delivers:
   - the automatic `GITHUB_TOKEN` limited to the permissions each workflow needs;
   - `main` protected, with the `make check` jobs required and pull request review required;
   - release tags signed;
-  - `SECURITY.md` and GitHub's private vulnerability reporting turned on before the repository goes public.
+  - GitHub's private vulnerability reporting turned on before the repository goes public, as `SECURITY.md` describes;
+  - the code licensed under Apache-2.0 (`LICENSE`), and every dependency's license checked as compatible when it's added to the approved list.
 - Development guardrails for building Hermit with Claude Code:
   - a short `CLAUDE.md` (draft below);
   - `.claude/settings.json` with the `Stop` hook below; `ask` for edits to `REQUIREMENTS.md`; `deny` for reading credential files;
