@@ -1,6 +1,6 @@
 # Implementation Plan: Hermit
 
-Status: draft. The specification is [REQUIREMENTS.md](REQUIREMENTS.md); requirement IDs (M1–M24, S1–S7, P1–P12) refer to it. Milestones are numbered 0–14 and are never written with an "M", to keep them distinct from requirement IDs. Two pieces of work are named rather than numbered: the spike before milestone 1, and the walking skeleton after milestone 5.
+Status: draft. The specification is [REQUIREMENTS.md](REQUIREMENTS.md); requirement IDs (M1–M24, S1–S7, P1–P12) refer to it. Milestones are numbered 0–14 and are never written with an "M", to keep them distinct from requirement IDs. Three pieces of work are named rather than numbered: the spike before milestone 1, the walking skeleton after milestone 5, and Bitbucket support after milestone 10.
 
 This plan assumes Hermit is built with an AI coding agent (Claude Code), following Anthropic's [best practices for Claude Code](https://code.claude.com/docs/en/best-practices). The practices that shape it:
 
@@ -275,7 +275,7 @@ Checks:
 
 ### Milestone 9: Source control
 
-Requirements: M24, S2, M20 (MR text approval and traceability), M23 (checking the repository's claimed identity with the host). GitLab first, then GitHub. High effort. Can run in parallel with milestones 6, 7 and 8.
+Requirements: M24, S2, M20 (MR text approval and traceability), M23 (checking the repository's claimed identity with the host). GitLab first, then GitHub; Bitbucket is separate work after milestone 10. High effort. Can run in parallel with milestones 6, 7 and 8.
 
 Delivers: `internal/scm` with the fixed call list, current-project check, the commit check for repository identity (M23), branch rules, diff filtering by read rules, host content passed through `scan` and `render`, exact-text approval with session ID and phases, and retrieval of CI test reports.
 
@@ -288,6 +288,38 @@ Requirements: M15, M7. Depends on milestone 6 for snapshots (freshness) and mile
 Delivers: `internal/testresults`: JUnit XML parsing with size limits and no external entities, freshness against snapshots, detail levels per class, and summaries of CI test reports retrieved through `scm`.
 
 Checks: fixtures from Maven, Gradle, pytest and Jest; malformed and oversized XML; a fuzz target.
+
+### Bitbucket support
+
+Requirements: M24, S2, M1 (CI results), M14.4 (host type and credential method), M15 (CI detail levels), M20 (PR text approval), M23 (commit check). Depends on milestones 9 and 10. Can run alongside milestones 11–13. High effort, as for milestone 9.
+
+M14.4 names Bitbucket as a source control host, and many organizations use it, but it differs from GitLab and GitHub enough to be its own piece of work. It isn't on the critical path: GitLab and GitHub organizations don't wait for it.
+
+Delivers: two `scm` adapters, one for each Bitbucket product, since they have separate APIs:
+- **Bitbucket Cloud** (REST API 2.0);
+- **Bitbucket Data Center**, self-hosted, with its own REST API.
+
+Each adapter has the same fixed call list as GitLab and GitHub. The current project is the workspace and repository (Cloud) or the project and repository (Data Center). Behaviour:
+- **Pull requests:** list and read pull requests and their comments; create or update a pull request's title and description only as `render.ApprovedMRText`; filter diffs by the read rules.
+- **Identity:** the commit check for repository identity (M23).
+- **Never:** merging, approving, declining, review tasks or comments (M24).
+- **Credentials (open decision 10):**
+  - **Cloud:** no documented device sign-in, and app passwords stopped working in June 2026, so developers use an API token with the narrowest scopes that read the repository and pull requests and write pull requests. The exact scope names come from the token creation screen.
+  - **Data Center:** HTTP access tokens, repository-scoped where the organization allows.
+  - **Policy:** neither puts a secret in the policy (M14.2).
+- **CI results (M24, "CI detail depends on the host"):**
+  - **Cloud:** the Pipelines API offers a test report summary per step: how many tests ran and how many failed. Per-test failure messages aren't available through the API (Atlassian request BCLOUD-24022). The agent gets the counts and the failed step, and relies on local reports (M15) for details.
+  - **Data Center:** no built-in CI. It reads build statuses posted by external CI (Jenkins, Bamboo).
+  - **Code Insights reports:** where the organization's CI publishes them, either adapter reads them as host content: scanned, hidden characters removed, untrusted (M19, M20, M24).
+
+Checks:
+- tests against recorded responses for both products;
+- the endpoint enumeration test from milestone 9 covers both adapters;
+- a pull request diff touching an unreadable file is filtered;
+- pull request text can be sent only as `render.ApprovedMRText`;
+- a repository whose remote points at a project that shares no commit with it gets the most restrictive class;
+- with only test counts available, the agent's CI summary says so rather than inventing failure details;
+- `hermit doctor` (S3) reports a token missing a required scope, by name.
 
 ### Milestone 11: Terminal interface and setup check
 
@@ -338,7 +370,8 @@ Checks: a reviewer who did not build Hermit can install and configure it from th
 | 8 Logging | 5 | Skeleton, 6, 7, 9 |
 | 9 Source control | 5 | Skeleton, 6, 7, 8 |
 | 10 Test results | 6, 9 | 7, 8 |
-| 11 Terminal interface and setup check | Skeleton, 6, 7, 8, 10 | — |
+| Bitbucket support | 9, 10 | 11, 12, 13 |
+| 11 Terminal interface and setup check | Skeleton, 6, 7, 8, 10 | Bitbucket |
 | 12 Packaging and distribution | 11 | — |
 | 13 Evaluation suite | 5, 7 | 8–12 |
 | 14 Validation and documentation | 12, 13 | — |
@@ -362,9 +395,9 @@ Checks: a reviewer who did not build Hermit can install and configure it from th
 | M9 Dependencies | 5 | M21 Path safety | 3 |
 | M10 Logging | 2, 5, 8, 12 | M22 Code that runs on its own | 6, 14 |
 | M11 Competitive | Spike, skeleton, 13, 14 (measured in the pilot) | M23 Data classes | 1, 7, 9 |
-| M12 Terminal interface | 11 | M24 Source control | 9 |
+| M12 Terminal interface | 11 | M24 Source control | 9, Bitbucket |
 | S1 Commands in prose | 11 | S5 Fuzzing | 3, 4, 5, 10, 14 |
-| S2 Guided MR review | 9 | S6 Validation pack | 14 |
+| S2 Guided MR review | 9, Bitbucket | S6 Validation pack | 14 |
 | S3 Setup check | 11 | S7 Standing instructions | 5 |
 | S4 Scripted provider | 5 | | |
 
@@ -404,3 +437,4 @@ Prerequisites P1–P12 are organizational. Milestone 14's documentation covers t
 7. **Format of the AWS setup templates** (milestone 8, for P5): CloudFormation, CDK or Terraform. CloudFormation needs no extra tooling in an AWS-only organization; Terraform suits organizations that already manage AWS with it. Shipping one and documenting the resources well enough to translate may be enough.
 8. **The macOS Keychain without cgo or running a program** (milestone 2). The common Go libraries either run `/usr/bin/security`, which breaks the process rule, or need cgo, which complicates reproducible builds. This is the same problem as open decision 5, and it is on the critical path. Windows Credential Manager and the Linux kernel keyring are reachable through system calls, and libsecret through D-Bus, without either. The options are the same as in decision 5: call Security.framework through libSystem-style trampolines without cgo, or accept cgo for the macOS build only and confirm the build stays reproducible. Recommendation: decide at the start of milestone 2, together with decision 5, since both need the same low-level calling code.
 9. **The edit tool's format** (milestone 5). Options include replacing an exact, unique piece of existing text, applying a unified diff, or rewriting a whole file. The choice decides how often edits fail to apply, and how edits map onto text the model saw altered (M3). Recommendation: exact-text replacement, which current models use reliably, and which maps directly to the M3 rule: the text being replaced must appear in the model's view, and must not overlap anything redacted or removed. Confirm with the spike's findings.
+10. **How developers sign in to Bitbucket Cloud** (Bitbucket support). Bitbucket Cloud documents no device sign-in. Its OAuth authorization code flow needs a browser that can reach a callback on the developer's machine, which fails on headless and remote development machines. It may also need a client secret, which can't go in the policy (M14.2). The alternative is a scoped API token that each developer creates and enters. Recommendation: API tokens, with `hermit doctor` checking their scopes. Revisit OAuth if Atlassian adds device sign-in, or confirms a flow without a client secret.
