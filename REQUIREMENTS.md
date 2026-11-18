@@ -27,7 +27,7 @@ A developer determined to go around the tool can always find a way. The realisti
 1. **Capabilities by construction.** The agent can do only what the harness offers as a named, structured action. There is no general shell to restrict, because there is no shell.
 2. **The commit is the approval.** The agent reads, searches and edits files without asking, within the limits in M7 and M12. The developer approves the plan up front, then approves changes the way they already do: by reviewing and committing them. The agent never commits or pushes. The commit approves what is kept, not what runs: IDE tools can run agent edits before the developer reviews them (M21).
 3. **Deterministic descriptions.** When the developer is asked to approve or review something, the harness's code describes it, not the model. The model's own explanation can be wrong or the product of a prompt injection. Where model-written text is itself the thing reviewed, such as an MR description that reviewers read as the author's explanation, the developer approves the exact text before it is sent (M19).
-4. **Reversible by default.** The agent's changes stay uncommitted in the working tree until the developer commits them. The agent's code reaches the source control host only when the developer pushes, and shared branches only through a merge request, which someone else reviews. Code that the developer's tools run locally can reach the network, so this holds for what the agent writes, not for what that code does if it runs (M21).
+4. **Reversible by default.** The agent's changes stay uncommitted in the working tree until the developer commits them, and any agent step can be undone, including changes to files git does not track (M3). The agent's code reaches the source control host only when the developer pushes, and shared branches only through a merge request, which someone else reviews. Code that the developer's tools run locally can reach the network, so this holds for what the agent writes, not for what that code does if it runs (M21).
 5. **Understanding through normal review.** Comprehension comes from well-structured comprehensible diffs, not from quizzes or attestations that people would resent and skip.
 6. **The harness enforces, the model can only be asked.** Instructions to the model are suggestions lost to context drift. Hard rules can only be enforced in harness code, not in careful prompting. Do not fully trust the model to understand developer intent.
 
@@ -54,6 +54,9 @@ A developer determined to go around the tool can always find a way. The realisti
 | Reaching other systems | Agent queries a database or calls an internal service | No shell and no credentials, so no capability to do it |
 | Side door through CI | Agent-written code reads CI secrets or calls the network when the pipeline runs | Protected paths; no protected variables or deployment credentials on agent branches; restricted runners |
 | Supply chain | Agent adds a malicious or typo-squatted dependency | Agent cannot edit dependency manifests; it discusses trade-offs with the developer who decides and types |
+| Subtle sabotage | An injected model weakens an authorization check or a cryptographic setting in a change that looks routine | Phase file lists show unplanned edits, and changes to sensitive areas are pointed out (M4); SAST and secret scanning in CI (P9); MR review (P3) |
+| Hidden content in writes | Agent writes a binary file, a minified blob or a very long line that the IDE diff can't show meaningfully | Hard-to-review writes refused by default (M5a) |
+| Exposure through history or snapshots | A secret removed long ago is still in git history; snapshots stored as git refs are pushed with `git push --mirror` | No history access (M1); snapshots kept outside the repository and limited to files the agent changes (M3) |
 | Human rubber-stamping | Developer commits everything unread near a deadline | A careless commit reaches only a branch and an MR that another human reviews, not the developer's machine or other systems |
 | Data sent to the wrong provider or region | A restricted repository is worked on with a cloud model; a cross-region inference profile sends requests abroad; Bedrock invocation logging keeps copies of every prompt | Data classes by repository, with unknown repositories most restricted (M22); models approved as specific IDs or profiles (M16); invocation logging off or controlled (P5); provider terms confirmed before approval (P4) |
 | Misuse of the source control token, and injection through the host | An injected instruction tries to read another project, merge or approve an MR, or delete a branch; an MR comment from an outside contributor carries instructions to the model; a CI summary leaks a masked secret | Fixed calls only, current project only, fixed branch rules, no merge, approval, label or comment actions (M23); MR diffs follow the repository's read rules; host content scanned and treated as untrusted (M18, M19, M23) |
@@ -106,16 +109,31 @@ These are real threats, but this tool does not try to defend against them. Each 
 
 The agent never commits or pushes. The developer does both.
 
+**No git history.** The agent cannot read git history (no log, show or blame). History reopens what the read rules close: secrets removed from the current version are still there, and renamed paths escape `.agentignore`. If history access is added later, the current read rules (M12), path rules (M20) and scanning (M18) must apply to every historical path and version.
+
 **M2. No shell, network or credentials.** The agent has no shell, no general network access, and never sees a credential. The harness holds the source control host token, the model credential and the log upload credential, and uses each only for its fixed purpose.
 
 **M3. Shared working tree.** The agent works in the developer's normal working tree, alongside their uncommitted changes, in both directions: the developer can start work and have the agent finish it, or add their own touches after the agent's work. The harness:
 - snapshots the tree before each agent step, so the review shows only the agent's changes for that step and the audit log can always tell the developer's work from the agent's;
 - refuses a patch to any file that changed after the agent last read it, and has the agent re-read it first, so a developer's newer edits are never overwritten.
 
-**M4. Plan first, small phases.** The developer approves a phased plan before any code changes. The agent keeps each phase small enough for the developer to review and commit on its own, and splits larger phases. The harness reports which plan step each set of changes implements.
+**Where snapshots live.** Snapshots are kept in the harness's own encrypted local storage (M9), never as git objects or refs in the repository, so commands such as `git push --mirror` cannot carry them anywhere. Only files the agent is about to change are captured. The agent cannot change unreadable files (M12), so files such as `.env` are never captured.
+
+**Undo.** A `hermit undo` command restores the state before any agent step or phase, including files the agent edited, deleted or created that git does not track and so cannot restore.
+
+**M4. Plan first, small phases.** The developer approves a phased plan before any code changes. The agent keeps each phase small enough for the developer to review and commit on its own, and splits larger phases.
+- **Each phase lists its files.** The approved plan names the files (or folders) each phase expects to touch. The harness compares the agent's actual edits with that list and shows the difference as a fact, not the model's claim: "phase 2 planned `a.py` and `b.py`, and also changed `c.py`." It warns rather than refuses, and the developer can accept a wider scope with one confirmation.
+- **Sensitive areas are pointed out.** Organization policy can list sensitive paths, such as authentication, cryptography and access control code. The phase summary notes when the agent changed one. The list is empty by default and should stay short, so the note appears rarely and only where the organization decided it matters.
 - **Guidance, not a hard limit.** The model is instructed to aim for phases that can be reviewed by a human in a maximum of 1 hour. The harness reports each phase's size and warns, but does not refuse, when a phase exceeds a threshold set in organization policy. A hard limit would block legitimate changes such as renames and generated code. Starting values are tuned during the pilot. Line count is not a reliable measure of MR comprehensibility.
 
 **M5. Review in the IDE; the developer commits.** The agent's changes appear in the working tree, so developers review them with their IDE's own diff and source-control views and can edit them directly. Committing is the approval. The harness never commits.
+
+**M5a. Writes must be reviewable.** IDE diffs cannot meaningfully show some content, so the harness refuses, by default, writes that contain:
+- binary data;
+- very long lines (over 500 characters by default);
+- long base64-like or minified runs of text, detected by length and randomness.
+
+Organization or repository configuration can allow named paths, such as test fixtures, where these are expected.
 
 **M6. Tests.** The agent can write and update tests. The developer runs them locally, and CI runs them on push. The agent reads the results (M14 and M1) but does not run tests itself.
 
@@ -155,6 +173,9 @@ Logs are written locally first and then uploaded (M15). A local log alone can be
 - **Encrypted at rest** with a key held in the operating system's credential store, and readable only by the developer's account. Full-disk encryption is also assumed (P8).
 - **Local logs are deleted** once their upload is confirmed and a retention period set by organization policy has passed (a few days by default). If uploads fail, they are kept until uploaded.
 - **Session files are cleaned up** at the end of a session or after a maximum age set by organization policy, whichever comes first.
+- **Saved conversations are transcripts.** Conversation state kept so a session can be resumed is a transcript on the developer's machine, even when central transcripts are off. It is encrypted like other local files, and a session can be resumed only within the maximum age.
+
+**One repository per session.** A session works in exactly one repository. Data classes (M22), read rules and source control limits (M23) all depend on knowing which repository is in use.
 - **Uninstalling removes everything** the harness stored.
 
 **M10. Competitive on the core loop.** For plan → diffs → tests → MR → revise, the tool is capable enough that developers don't want to switch to an unrestricted product.
@@ -169,7 +190,7 @@ Reading by file name is coarse: sensitive content also turns up in test fixtures
 
 **M13. Organization policy.** The organization delivers a policy file through its usual software and configuration distribution. Developers cannot change it, and it overrides developer and repository settings. Repository configuration (such as `.agentignore`) can only add restrictions, never remove them.
 
-**The policy contains no secrets.** It is on every machine and readable by every developer. It says how each developer obtains their own credentials, and the harness stores those in the operating system's credential store (M2). Per-developer credentials attribute MRs and usage to the right person and can be revoked one at a time. Section 12 lists everything an organization, a repository and a developer provide.
+**The policy contains no secrets.** It is on every machine and readable by every developer. It says how each developer obtains their own credentials, and the harness stores those in the operating system's credential store (M2). Per-developer credentials attribute MRs and usage to the right person and can be revoked one at a time. Section 13 lists everything an organization, a repository and a developer provide.
 
 The policy covers at least:
 
@@ -198,6 +219,11 @@ The policy covers at least:
 | Allowed MR target branches | The default branch | Other branches MRs may target (M23) |
 | Network | System settings | HTTPS proxy and extra CA certificates, often needed for self-hosted hosts and inspecting proxies |
 | Usage limits | None | Tokens or spend per developer per day, and per session |
+| Enabled | On | Set to off to stop the harness everywhere the policy reaches (section 12) |
+| Sensitive paths | None | Paths whose changes are pointed out in phase summaries (M4). Keep the list short |
+| Allowed hard-to-review content | None | Paths where binary data, long lines or encoded blobs may be written (M5a) |
+| Credential storage | Operating system credential store | Or the kernel keyring on headless Linux, or sign in each session (M17) |
+| Session maximum age | Set by the organization | After this, session files are removed and a session cannot be resumed (M9) |
 | Support details | None | Help channel or contact, and acceptable-use policy link, shown at startup and in errors |
 
 **M14. Reading test results.** The developer runs tests, in their IDE or terminal, as they normally would. The agent reads the results through a fixed, read-only action:
@@ -252,6 +278,8 @@ Choosing a provider is configuration, not a separate implementation.
 - **Encrypted connections except on loopback.** The harness requires HTTPS for every model endpoint, except loopback addresses (`localhost`, `127.0.0.1`, `::1`), where plain HTTP is allowed. A configuration mistake can't send code over an unencrypted network connection.
 
 **M17. Distribution and managed configuration.** Organizations can deploy the tool and its policy (M13) with the device management they already use.
+- **Supported environments.** Desktop macOS, Windows and Linux, headless Linux and remote development machines, and virtual desktops, including non-persistent ones.
+- **Credential storage fallbacks.** The operating system's credential store is used where available. On headless Linux, where libsecret needs a desktop session, the kernel keyring is used. Organization policy can instead choose "sign in each session", which suits non-persistent virtual desktops, where stored credentials disappear at logout. SSO (the gateway or IAM Identity Center) makes signing in each session easy; API keys suit these environments poorly, which is another reason to prefer a gateway (M16).
 - **One executable, no runtime.** The harness is written in Go and built as a single executable for each operating system and processor type. The only other requirement on developer machines is `git`.
 - **Standard packages.** A signed and notarized `.pkg` for macOS (Jamf, Intune, Kandji), a signed MSI for Windows (Intune, Configuration Manager), and `.deb` and `.rpm` packages for Linux (package repository, Ansible, Puppet). Homebrew and winget packages for individuals evaluating it.
 - **Policy in a fixed system location.** macOS: a managed preferences domain delivered as an MDM configuration profile, or `/Library/Application Support/Hermit/policy.json`. Windows: `HKLM\SOFTWARE\Policies\Hermit` (Group Policy or Intune, with an ADMX template), or `C:\ProgramData\Hermit\policy.json`. Linux: `/etc/hermit/policy.json`.
@@ -335,7 +363,9 @@ So an agent edit can run on the developer's machine, with their credentials and 
 - a hard link to a protected or unreadable file;
 - a file replaced with a symlink between the check and the write.
 
-The suite runs on macOS, Windows and Linux, because several cases exist on only one of them. It is available only in test builds or unmanaged mode, never through organization policy. Testing then uses three layers: the scripted provider for automated tests, a local model for manual smoke tests, and real providers for the evaluation suite (M16).
+The suite runs on macOS, Windows and Linux, because several cases exist on only one of them.
+
+**S5. Fuzzing.** The harness is the security boundary, so the parts that handle untrusted input are fuzzed continuously: the path layer (M20), content scanning (M18), escape and hidden-character handling (M19), the tool-call parser, and the JUnit XML reader (M14). Untrusted XML is parsed with size limits and without external entities. It is available only in test builds or unmanaged mode, never through organization policy. Testing then uses three layers: the scripted provider for automated tests, a local model for manual smoke tests, and real providers for the evaluation suite (M16).
 
 ## 8. Organizational prerequisites
 
@@ -356,6 +386,9 @@ These aren't features of the tool, but the design depends on them:
 - **P6.** Repositories write JUnit XML test reports from their build tool (M14).
 - **P7.** Restricted and regulated data, and real credentials, are kept out of source repositories, including test fixtures and saved notebook output. File rules (M12) and content scanning (M18) are a backstop for mistakes, not a substitute.
 - **P8.** Developers are not local administrators on the machines where the harness runs. The local controls (a policy the developer cannot change, protected files, the local log before upload) hold only for developers without admin rights. Where developers are administrators, those controls depend on the developer's good faith, and the server-side controls (the model gateway in M16 and the log checks in M15) are what remain.
+
+- **P9.** CI runs static analysis (SAST) and secret scanning on every branch that agent-written code reaches. These are the deep checks for subtle bugs and planted weaknesses that review can miss.
+- **P10.** Before production use, the harness gets an independent penetration test, repeated for major releases. Once the agent has no shell, the harness is the security boundary and needs the testing a boundary gets.
 
 ## 9. Success measures
 
@@ -392,7 +425,23 @@ To be agreed with leadership before a pilot:
 
 5. **Policy signing:** verifying that the policy file is signed by the organization, beyond file permissions and managed delivery (M17).
 
-## 12. Configuration reference
+## 12. Operations and incident response
+
+### Kill switch
+
+- **With a gateway:** turn access off for a user, a team or everyone at the gateway (M16). This takes effect on the next request.
+- **Without a gateway:** revoke the affected API keys or the Bedrock role, and push a policy with `enabled` set to false through device management. The harness refuses to start, and running sessions stop at their next policy check.
+
+### Runbook: restricted data was sent to the model
+
+1. **Find the affected sessions** in the audit log (M9, M15) by user, repository, time and scanning or refusal events.
+2. **Rotate** any credential that may have been exposed. Assume exposure if in doubt.
+3. **Ask the provider to delete the data**, where its terms allow it (P4). Record the request and the response.
+4. **Erase affected transcripts** by deleting their session keys (crypto-shredding, M15), and clear local session files on the developer's machine.
+5. **Fix the cause:** add the path to the unreadable list (M12), add an organization data pattern (M18), or move the data out of the repository (P7).
+6. **Notify** according to the organization's own incident and data-breach policies.
+
+## 13. Configuration reference
 
 What each party provides to get the tool running. Nothing in the organization or repository layers is a secret.
 
@@ -438,11 +487,14 @@ What each party provides to get the tool running. Nothing in the organization or
 | Require a write allowlist, pending-changes mode | Off, off |
 | Usage limits | None |
 | Support details | None |
+| Sensitive paths, allowed hard-to-review content | None |
+| Credential storage | Operating system credential store |
 | Minimum harness version | None |
 
 ### Repository (protected files the agent cannot edit)
 
 - `.agentignore`: extra protected and unreadable paths, and optionally a write allowlist (M7). These can only add restrictions.
+- Paths where binary data, long lines or encoded blobs are expected, such as test fixtures (M5a).
 - Test results path, if it is not the build tool's default (M14).
 
 ### Developer (once, at first run)
@@ -519,6 +571,10 @@ Illustrative only; the final format is settled during implementation. This examp
     "allowed_domains": ["gitlab.example.org"],
     "allow_hidden_characters_in": ["**/locales/**", "**/*.po"]
   },
+  "enabled": true,
+  "sensitive_paths": ["src/auth/**", "src/crypto/**"],
+  "credential_storage": "os_store",
+  "session_max_age_days": 7,
   "usage_limits": { "tokens_per_developer_per_day": 5000000 },
   "support": {
     "contact": "#hermit-help",
