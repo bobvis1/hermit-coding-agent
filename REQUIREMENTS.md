@@ -45,6 +45,7 @@ If a developer uses a consumer product with no data processing agreement, it cir
 | Leaks and deception through rendered text | An injected instruction gets the model to put an image in the MR description whose URL carries an encoded secret, fetched when a reviewer opens the MR; escape sequences or bidirectional characters hide part of a diff | External images removed and links shown in full; developer approves exact MR text; escape sequences stripped; hidden characters refused in writes and removed from reads (M19) |
 | Sensitive content in ordinary files | A token in `config/local.yml`, personal data in a test fixture or saved notebook output, a secret in a test failure message | Git-ignored files unreadable by default (M12); scanning of everything sent to the model and everything written (M18); restricted data kept out of repositories (P7) |
 | Local execution of agent-written files | Agent writes a git hook, IDE task or `.envrc` that runs on the developer's machine with their credentials | These paths are protected from edits by the model (M7), including everything under `.git/` |
+| Bypassing path rules | A symlink in the repository to `~/.ssh/`, `.GIT/hooks/` on a case-insensitive file system, a hard link to a protected file, or a file swapped between check and write | Operations confined to the repository root and checked on resolved paths; permissive name matching; no symlink creation or multiply-linked files; atomic writes (M20); hostile tests on every operating system (S4) |
 | Local execution of agent-written tests | A test or its setup code reads credentials or calls the network when the developer runs it | The agent's changes are shown separately for review (M3) before the developer runs them |
 | Reaching other systems | Agent queries a database or calls an internal service | No shell and no credentials, so no capability to do it |
 | Side door through CI | Agent-written code reads CI secrets or calls the network when the pipeline runs | Protected paths; no protected variables or deployment credentials on agent branches; restricted runners |
@@ -216,6 +217,17 @@ Scanning is a backstop, not a guarantee. It reduces the chance of sensitive cont
   - **In writes,** these characters are refused in code by default. Other zero-width characters are flagged in the change summary. They have legitimate uses, such as right-to-left languages in translation files and zero-width joiners in emoji, so organization policy can allow them in named paths, such as locale files.
   - **In reads,** repository content can use them to hide instructions to the model that the developer can't see. Content sent to the model has tag characters removed, and the developer is told when a file contained hidden characters.
 
+**M20. Path safety.** Protected and unreadable paths (M7, M12) are only as strong as the path matching behind them, and matching path strings is easy to get around. The harness:
+- **Confines every file operation to the repository root** through a directory handle opened at the root, not through path strings. `..` and symlinks that lead outside the root are refused. (Go provides this as `os.Root`.)
+- **Checks rules against the resolved path.** A symlink that stays inside the repository can be followed, but M7 and M12 apply to where it actually points, not the name it was reached by.
+- **Never creates symlinks and never writes through one.** A write replaces the file itself, never a link's target.
+- **Refuses multiply-linked files.** A hard link is another name for the same file, invisible to path checks. Files with more than one link cannot be written, and cannot be read outside ignored folders the organization has allowed (M12). (Some package managers, such as pnpm, fill `node_modules` with hard links; allowing that folder accepts this.)
+- **Compares names as the most permissive file system would, on every platform.** Matching ignores case and Unicode normalization differences, so `.GIT/hooks` and `.VSCode/` are protected even on Linux. Paths containing `:` (Windows alternate data streams), trailing dots or spaces, 8.3 short names (such as `GIT~1`) or reserved device names (such as `CON` or `NUL`) are refused.
+- **Protects `.git` in every form, at any depth.** A `.git` file, as used by worktrees and submodules, is protected like a `.git` folder, as is the `.git` of any nested repository. The git directory such a file points to is normally outside the root, so confinement already blocks it.
+- **Leaves no gap between check and use.** Writes go to a temporary file in the same folder, opened without following links, and are then atomically renamed into place. Reads open the file first and check the open file, so it can't be swapped between the check and the read.
+
+Every case above has a hostile script in the test suite (S4).
+
 ### Should
 
 **S1. Commands in prose.** The model is instructed (but not forced) to describe goals rather than write commands for the developer to run. If the model suggests shell commands, the harness flags them as unverified. Detection covers fenced code blocks marked as shell and lines that start with a shell prompt such as `$`, which is reliable. The harness shows them with a label ("unverified command from the model: read before running") and no copy button. Commands buried in a sentence are harder to detect, which is why the model is also instructed not to write them.
@@ -224,7 +236,17 @@ Scanning is a backstop, not a guarantee. It reduces the chance of sensitive cont
 
 **S3. Setup check.** A `hermit doctor` command confirms that the policy loads and the developer cannot modify it, that credentials work, that the model provider and source control host are reachable with the configured proxy and CA certificates, that the test results path is readable, and, when S3 logging is on, that an upload succeeds. Each failure names the setting to fix and the support contact.
 
-**S4. Scripted test provider.** A fake model provider replays a fixed sequence of model responses and tool calls, so the harness's own test suite is deterministic, fast and free. Scripts include deliberately hostile sequences, such as writing `.git/hooks/pre-commit`, reading `.env`, overwriting a file the developer has just changed, or emitting malformed tool calls, to prove that every rule is enforced by the harness regardless of the model. It is available only in test builds or unmanaged mode, never through organization policy. Testing then uses three layers: the scripted provider for automated tests, a local model for manual smoke tests, and real providers for the evaluation suite (M16).
+**S4. Scripted test provider.** A fake model provider replays a fixed sequence of model responses and tool calls, so the harness's own test suite is deterministic, fast and free. Scripts include deliberately hostile sequences, such as writing `.git/hooks/pre-commit`, reading `.env`, overwriting a file the developer has just changed, or emitting malformed tool calls, to prove that every rule is enforced by the harness regardless of the model. They also cover every path-safety case in M20:
+- a symlink in the repository to `~/.ssh/`, and one into `.git/hooks/`;
+- `..` escapes;
+- `.GIT/hooks/` and `.VSCode/tasks.json`;
+- a protected name written with different Unicode normalization;
+- `GIT~1`, `file:stream` and trailing-dot names on Windows;
+- a `.git` file in a worktree, and a nested repository;
+- a hard link to a protected or unreadable file;
+- a file replaced with a symlink between the check and the write.
+
+The suite runs on macOS, Windows and Linux, because several cases exist on only one of them. It is available only in test builds or unmanaged mode, never through organization policy. Testing then uses three layers: the scripted provider for automated tests, a local model for manual smoke tests, and real providers for the evaluation suite (M16).
 
 ## 8. Organizational prerequisites
 
