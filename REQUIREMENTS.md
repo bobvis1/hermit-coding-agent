@@ -6,19 +6,19 @@ Organizations that handle sensitive data often accept a model API (their agreeme
 
 - **Data exfiltration:** code or data leaving through a channel nobody reviewed.
 - **Reach:** the agent touching systems it shouldn't.
-- **Comprehension:** developers not understanding what is being done and why.
+- **Comprehension:** code being committed that developers do not understand.
 
-Turning off command execution doesn't solve this. The agent then suggests commands for the developer to run, and those are often chained pipelines that are hard to read. The developer becomes the checkpoint, and that checkpoint gets weaker as they get tired or a deadline gets closer. A command copied out of a chat also bypasses every control: it runs in the developer's own shell, with their full environment and credentials, and nothing records that a model suggested it.
+Turning off command execution doesn't solve this. The agent then suggests commands for the developer to run, which are often chained pipelines that are hard to read. The developer becomes a checkpoint, which can get tired or less particular near deadlines. A developer copying a command out of a chat runs with the developer's full access, bypassing every control otherwise enforced on the model.
 
-Manual approval of each command has the same weakness. Safety ends up depending on the developer's patience and discipline.
+Manual approval has the same weakness. Safety ends up depending on the developer's patience and discipline balanced against their own deadlines and pressures.
 
 ## 2. Goals
 
-> Every action that takes effect is one the developer understood and intended.
+> Every action that takes effect is one the developer understands and intends.
 
-> The tool is convenient enough that developers don't circumvent it with more powerful ones.
+> The tool is sufficiently useful that developers don't circumvent it with more powerful, unsafe ones.
 
-A safe tool a developer doesn't use in favor of a consumer product with no data processing agreement provides no safety. Convenience, usability and usefulness are security requirements. The tool should be competitive with tools a developer might encounter when working on less sensitive systems.
+If a developer uses a consumer product with no data processing agreement, it circumvents all of the organizations security requirements. Convenience, usability and usefulness to developers are thus security requirements. The tool should be competitive with tools a developer might encounter when working on less sensitive systems.
 
 ## 3. Design principles
 
@@ -27,7 +27,7 @@ A safe tool a developer doesn't use in favor of a consumer product with no data 
 3. **Deterministic descriptions.** When the developer is asked to approve or review something, the harness's code describes it, not the model. The model's own explanation can be wrong or the product of a prompt injection.
 4. **Reversible by default.** The agent's changes stay uncommitted in the working tree until the developer commits them. Nothing leaves the developer's machine until the developer pushes, and code reaches shared branches only through a merge request, which someone else reviews.
 5. **Understanding through normal review.** Comprehension comes from well-structured comprehensible diffs, not from quizzes or attestations that people would resent and skip.
-6. **The harness enforces, the model is instructed.** Instructions to the model are a suggestion. Every hard rule is enforced in harness code. Do not fully trust the model to understand developer intent.
+6. **The harness enforces, the model can only be asked.** Instructions to the model are suggestions lost to context drift. Hard rules can only be enforced in harness code, not in careful prompting. Do not fully trust the model to understand developer intent.
 
 ## 4. Users
 
@@ -41,15 +41,15 @@ A safe tool a developer doesn't use in favor of a consumer product with no data 
 |---|---|---|
 | Honest model mistake | Deletes the wrong code, misreads requirements | Plan approval, small phases reviewed before the developer commits, MR review |
 | Prompt injection | Text in the repository or a dependency instructs the agent | No shell, no network, no credentials; fixed actions only; protected paths |
-| Data exfiltration | Agent sends code or secrets somewhere | No network access for the agent; only outbound channels are the model API, the organization's source control host and its log storage, all used by the harness, not the agent; files that must never reach the model API cannot be read (M12) |
-| Local execution of agent-written files | Agent writes a git hook, IDE task or `.envrc` that runs on the developer's machine with their credentials | These paths are protected (M7), including everything under `.git/` |
-| Local execution of agent-written tests | A test or its setup code reads credentials or calls the network when the developer runs it | The agent's changes are shown separately for review (M3) before the developer runs them; optional sandbox (C2) and risky-code flags (C3) |
+| Data exfiltration | Agent sends code or secrets somewhere | No network access for the agent; only outbound channels are the model API, the organization's source control host and its log storage, all used by the harness, not the agent; files that must never reach the model API cannot be read (M12). Note: logging is an exfiltration risk, but can be turned off |
+| Local execution of agent-written files | Agent writes a git hook, IDE task or `.envrc` that runs on the developer's machine with their credentials | These paths are protected from edits by the model (M7), including everything under `.git/` |
+| Local execution of agent-written tests | A test or its setup code reads credentials or calls the network when the developer runs it | The agent's changes are shown separately for review (M3) before the developer runs them |
 | Reaching other systems | Agent queries a database or calls an internal service | No shell and no credentials, so no capability to do it |
 | Side door through CI | Agent-written code reads CI secrets or calls the network when the pipeline runs | Protected paths; no protected variables or deployment credentials on agent branches; restricted runners |
-| Supply chain | Agent adds a malicious or typo-squatted dependency | Agent cannot edit dependency manifests; it discusses trade-offs, the developer decides and types |
+| Supply chain | Agent adds a malicious or typo-squatted dependency | Agent cannot edit dependency manifests; it discusses trade-offs with the developer who decides and types |
 | Human rubber-stamping | Developer commits everything unread near a deadline | A careless commit reaches only a branch and an MR that another human reviews, not the developer's machine or other systems |
 
-There is no reliable mitigation to developers not reviewing code. Developers must take responsibility for the MRs they author and approve.
+There is no reliable mitigation to developers not reviewing code. Developers must take responsibility for the MRs they author and the MRs they approve.
 
 ## 6. Tasks in scope
 
@@ -88,7 +88,7 @@ The agent never commits or pushes. The developer does both.
 - refuses a patch to any file that changed after the agent last read it, and has the agent re-read it first, so a developer's newer edits are never overwritten.
 
 **M4. Plan first, small phases.** The developer approves a phased plan before any code changes. The agent keeps each phase small enough for the developer to review and commit on its own, and splits larger phases. The harness reports which plan step each set of changes implements.
-- **Guidance, not a hard limit.** The model is instructed to aim for phases of a few hundred changed lines across a handful of files. The harness reports each phase's size and warns, but does not refuse, when a phase exceeds a threshold set in organization policy. A hard limit would block legitimate changes such as renames and generated code. Starting values are tuned during the pilot.
+- **Guidance, not a hard limit.** The model is instructed to aim for phases that can be reviewed by a human in a maximum of 1 hour. The harness reports each phase's size and warns, but does not refuse, when a phase exceeds a threshold set in organization policy. A hard limit would block legitimate changes such as renames and generated code. Starting values are tuned during the pilot. Line count is not a reliable measure of MR comprehensibility.
 
 **M5. Review in the IDE; the developer commits.** The agent's changes appear in the working tree, so developers review them with their IDE's own diff and source-control views and can edit them directly. Committing is the approval. The harness never commits.
 
@@ -103,11 +103,12 @@ The agent never commits or pushes. The developer does both.
 
 Each repository can add to the list in a .agentignore file the agent also cannot edit.
 
-**M8. Dependencies are suggested, not added.** When a change needs a new dependency, the agent discusses it (package, version, purpose) and the developer chooses to add it by hand or not add it. The model is requested (but cannot be forced) to present the dependency as a description, not a copy-and-paste-able import statement.
+**M8. Dependencies are suggested, not added.** When a change needs a new dependency, the agent discusses it (package, version, purpose) and the developer chooses to add it by hand or not add it. The model is requested to present the dependency as a description, not a copy-and-paste-able import statement.
 
 **M9. Logging.** Every agent action and refusal, and every plan approval, is logged with the user, session and time. Snapshots (M3) let the log separate the agent's changes from the developer's. Organization policy (M13) sets what is logged:
 - **Full transcripts** (default): audit events plus the complete conversation, including code and test output the model saw.
 - **Audit only:** actions, refusals, approvals, file paths and content hashes, without conversation text or file contents.
+- **None**
 
 Logs are written locally first, to a file only the developer's account can read, and can be uploaded to central storage (M15).
 
@@ -171,7 +172,7 @@ Developers run agent-written tests before or after reviewing them, as they would
 Supported providers:
 - **Claude API (Must).** A key per user or team, stored in the operating system's credential store (macOS Keychain, Windows Credential Manager, libsecret on Linux), never in an environment variable or a file in the repository. Console workspaces provide usage tracking, spending limits and key revocation.
 - **Amazon Bedrock (Must).** Short-lived credentials from IAM Identity Center, for a role that can only call `bedrock:InvokeModel*` on the approved models. Usage falls under the organization's AWS agreement and is recorded in CloudTrail. When logs also go to S3 (M15), one sign-in can cover both, through a single role that can only invoke the approved models and write logs. Bedrock also hosts other vendors' models, which the same adapter can reach through Bedrock's Converse API.
-- **OpenAI API and OpenAI-compatible endpoints (Should).** An API key stored as for the Claude API. The same adapter covers self-hosted open-weight models served behind an OpenAI-compatible endpoint (for example vLLM), for organizations that require inference to stay on their own infrastructure. Agentic coding is sensitive to model quality, so such models must pass the same evaluation.
+- **OpenAI API and OpenAI-compatible endpoints including local ones (Must).** An API key stored as for the Claude API. The same adapter covers self-hosted open-weight models served behind an OpenAI-compatible endpoint (for example vLLM), for organizations that require inference to stay on their own infrastructure. Agentic coding is sensitive to model quality, so such models must pass the same evaluation.
 
 Choosing a provider is configuration, not a separate implementation.
 
@@ -196,22 +197,6 @@ Choosing a provider is configuration, not a separate implementation.
 **S3. Setup check.** A `hermit doctor` command confirms that the policy loads and the developer cannot modify it, that credentials work, that the model provider and source control host are reachable with the configured proxy and CA certificates, that the test results path is readable, and, when S3 logging is on, that an upload succeeds. Each failure names the setting to fix and the support contact.
 
 **S4. Scripted test provider.** A fake model provider replays a fixed sequence of model responses and tool calls, so the harness's own test suite is deterministic, fast and free. Scripts include deliberately hostile sequences, such as writing `.git/hooks/pre-commit`, reading `.env`, overwriting a file the developer has just changed, or emitting malformed tool calls, to prove that every rule is enforced by the harness regardless of the model. It is available only in test builds or unmanaged mode, never through organization policy. Testing then uses three layers: the scripted provider for automated tests, a local model for manual smoke tests, and real providers for the evaluation suite (M16).
-
-### Could
-
-**C1. Repository orientation** (task 7).
-
-**C2. Sandboxed tests the agent can run (organization option; decide after the pilot).** With M14, the developer runs every test. A sandbox would let the agent run tests, fix and rerun on its own, which is faster for "make these tests pass" tasks. Build it only if the pilot shows developers often want this (see section 9). If built:
-- **Fixed command.** The test command is defined in repository configuration the agent cannot edit. The agent chooses which tests to run (a file or a test name) but never writes the command, so the harness can describe each run exactly.
-- **Container sandbox.** Tests run in a container (Podman or Docker, which becomes a requirement on developer machines) with the repository mounted, no network access, no credentials in the environment, and writes limited to the repository and temporary space.
-- **Service containers.** Organization policy can allow named service images, such as a database, on an isolated network with no outside access, holding synthetic or seeded data, never production data.
-- **No approval for each run,** because the command is fixed and the sandbox limits what it can do.
-- **Dependencies are fetched outside the sandbox** by the developer's normal build.
-- **The developer can use it too,** to run agent-written tests contained before reviewing them.
-
-**This is a real compromise.** Many non-trivial tests need real databases or services. Service containers cover some of this, but tests that need shared infrastructure, real data or outside services run only on the developer's machine or in CI.
-
-**C3. Flags for risky code (organization option, off by default).** After each agent step, deterministic rules (not the model) point out lines in the agent's new code that deserve a closer look before running, such as network calls, reading credential paths, or starting processes. The risk is flag fatigue: warnings people learn to skip are worse than none. So rules are few and high-signal, apply only to code the agent added, and are tuned with pilot data before being turned on widely.
 
 ## 8. Organizational prerequisites
 
@@ -254,10 +239,6 @@ To be agreed with leadership before a pilot:
 ### For each organization to decide
 
 4. **Approved models:** which models to allow for each provider, and what score on the evaluation suite (M16) a model needs. Version 1 uses one model per session; a cheaper model for simple steps can be added later if cost warrants it.
-
-### Only if C2 is built
-
-5. **Containers on Windows and macOS:** performance of mounted repositories, and licensing (Docker Desktop requires a paid subscription for larger organizations; Podman does not).
 
 ### Later hardening
 
