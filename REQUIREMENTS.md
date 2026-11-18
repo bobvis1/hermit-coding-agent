@@ -168,7 +168,7 @@ Organization or repository configuration can allow named paths, such as test fix
 |---|---|---|---|
 | **Audit events** | Event type, time, user, session, repository and outcome. Paths, search queries, tool arguments, branch names and MR titles appear only as keyed hashes | On | 6 years, compliance mode. Holds no plaintext identifiers |
 | **Audit details** | The plaintext of those fields, and read records (below) | On | 1 year, governance mode, per-session keys, so it can be erased |
-| **Transcripts** | The complete conversation, including code and test output the model saw | Off (organization opt-in) | 90 days, governance mode, per-session keys |
+| **Transcripts** | The complete conversation, including code and test output the model saw, and any summaries the model writes when a long conversation is condensed | Off (organization opt-in) | 90 days, governance mode, per-session keys |
 
 Organization policy (M14) can turn off audit details or transcripts, or turn off logging entirely. Content scanning (M19) runs on audit details and transcripts before they are written, but they can still hold personal data or a secret that scanning missed, which is why both can be erased.
 
@@ -186,7 +186,7 @@ Logs are written locally first and then uploaded (M16). A local log alone can be
 - **Encrypted at rest** with a key held in the operating system's credential store, and readable only by the developer's account. Full-disk encryption is also assumed (P8).
 - **Local logs are deleted** once their upload is confirmed and a retention period set by organization policy has passed (a few days by default). If uploads fail, they are kept until uploaded.
 - **Session files are cleaned up** at the end of a session or after a maximum age set by organization policy, whichever comes first.
-- **Saved conversations are transcripts.** Conversation state kept so a session can be resumed is a transcript on the developer's machine, even when central transcripts are off. It is encrypted like other local files, and a session can be resumed only within the maximum age.
+- **Saved conversations are transcripts.** Conversation state kept so a session can be resumed is a transcript on the developer's machine, even when central transcripts are off. So are summaries the model writes when a long conversation is condensed to fit its context: they contain whatever the model saw. It is encrypted like other local files, and a session can be resumed only within the maximum age.
 - **Uninstalling removes everything** the harness stored.
 
 **One repository per session.** A session works in exactly one repository. Data classes (M23), read rules and source control limits (M24) all depend on knowing which repository is in use.
@@ -208,46 +208,77 @@ Reading by file name is coarse: sensitive content also turns up in test fixtures
 
 **The policy contains no secrets.** It is on every machine and readable by every developer. It says how each developer obtains their own credentials, and the harness stores those in the operating system's credential store (M2). Per-developer credentials attribute MRs and usage to the right person and can be revoked one at a time. Section 13 lists everything an organization, a repository and a developer provide.
 
-The policy covers at least:
+The policy settings, their defaults and where each is defined. This is the only list of organization settings; section 13 refers to it.
+
+**Required: no default, must be set**
+
+| Setting | Contents |
+|---|---|
+| Model provider | Claude API, Amazon Bedrock, OpenAI-compatible, or an organization gateway (M17). A gateway is recommended for production |
+| Approved models | Specific model IDs or inference profiles. Cross-region profiles only if approved (M17) |
+| Provider endpoint | Bedrock region (including GovCloud), or the base URL of an OpenAI-compatible, regional, local or gateway endpoint (M17) |
+| Model credential method | Gateway: SSO sign-in details for short-lived tokens, and optionally the device certificate to present. Claude API or OpenAI: developers enter a key issued to them. Bedrock: IAM Identity Center start URL, sign-in region, account ID and role name (M17) |
+| Source control host | URL and type, such as GitLab, GitHub or Bitbucket (M24) |
+| Source control credential method | An OAuth application ID, where the host supports device sign-in. Otherwise a personal access token with the narrowest scope that can read the repository and open MRs (M24) |
+| Log destination | Amazon S3 (bucket, region, upload role, the organization hashing key, a KMS key for audit events, and separate KMS keys and a session key store for audit details, escrow and transcripts), the model gateway's log, or local only, which is not a reliable audit trail (M10, M16) |
+
+**Logging and retention**
 
 | Setting | Default | Notes |
 |---|---|---|
-| **Log retention: audit events** | **6 years** | **Review this before the first production upload.** Six years matches HIPAA's documentation retention (45 CFR 164.316(b)(2)). Check the rules for your jurisdiction, which may require longer or prefer shorter. Audit events use S3 Object Lock in compliance mode, which can extend retention for logs already written but never shorten it (M16). |
-| **Log retention: transcripts** | **90 days**, if transcripts are turned on | **Review this too.** Transcripts contain code and possibly data. They use governance mode and per-session keys, so administrators can erase them (M16). |
-| Phase size warning | Set during the pilot | A size measure (changed lines and files) standing in for about one hour of review. The harness warns above it, never refuses (M4) |
-| **Log retention: audit details** | **1 year** | **Review this too.** Plaintext paths, queries, arguments and read records. Governance mode and per-session keys, so administrators can erase them (M16). Long enough to investigate incidents discovered late |
+| **Log retention: audit events** | **6 years** | **Review this before the first production upload.** Six years matches HIPAA's documentation retention (45 CFR 164.316(b)(2)). Check the rules for your jurisdiction, which may require longer or prefer shorter. Audit events use S3 Object Lock in compliance mode, which can extend retention for logs already written but never shorten it (M16) |
+| **Log retention: audit details** | **1 year** | **Review this too.** Plaintext paths, queries, arguments and read records, kept long enough to investigate incidents discovered late. Erasable (M16) |
+| **Log retention: transcripts** | **90 days**, if turned on | **Review this too.** Transcripts contain code and possibly data. Erasable (M16) |
 | Log content | Audit events and audit details | Transcripts are opt-in; audit details or all logging can be turned off (M10) |
 | Organization hashing key | Rotated yearly | KMS key for keyed hashes in audit events. Destroying an old key makes that period's hashes unlinkable (M10) |
-| Breach scoping for unrebuildable content | Worst-case scoping | Or escrow of what was sent from pastes, untracked files, test and CI output and MR comments. Escrow is recommended where breach-notification law applies (M10) |
-| Log destination | None; must be set | Amazon S3 (M16), the model gateway's log (M17), or local only, which is not a reliable audit trail (M10) |
-| Local file retention | A few days after confirmed upload; session files cleaned up at session end | For local logs and session files on developer machines (M10) |
-| Model provider | None; must be set | Claude API, Amazon Bedrock, OpenAI-compatible, or an organization gateway (M17), plus the approved models as specific IDs or inference profiles. A gateway is recommended for production |
-| Data classes | One class for all repositories | Ranked classes, each a bundle of settings (providers, approved features, log tiers and destination, scanning, read and write allowlists, pending-changes mode), and repository patterns mapped to them. Local-only classes name the approved local server programs. Unmatched repositories get the most restrictive class (M23) |
+| Breach scoping for content that can't be rebuilt | Worst-case scoping | Or escrow of what was sent from pastes, untracked files, test and CI output and MR comments. Escrow is recommended where breach-notification law applies (M10) |
+| Local file retention | A few days after confirmed upload; session files removed at session end | For local logs and session files on developer machines (M10) |
+| Session maximum age | Set by the organization | After this, session files are removed and a session cannot be resumed (M10) |
+
+**Models and data classes**
+
+| Setting | Default | Notes |
+|---|---|---|
+| Data classes | One class for all repositories | Ranked classes, each a bundle of settings, and repository patterns mapped to them. Local-only classes name the approved local server programs. Unmatched repositories get the most restrictive class (M23) |
 | Provider features | None approved | Features such as prompt caching, approved per data class. Approve prompt caching wherever terms allow (M17) |
-| Read allowlist | None | The only paths the agent may read; set by the organization, a data class or a repository (M13) |
-| Managed-device marker | None | MDM marker that makes a missing policy stop the harness (M18). Organization builds have it built in |
-| Minimum harness version | None | Older versions refuse to run (M18) |
+| Usage limits | None | Tokens or spend per developer per day, and per session |
+
+**Reading, writing and scanning**
+
+| Setting | Default | Notes |
+|---|---|---|
 | Protected and unreadable paths | The defaults in M8 and M13 | The organization can add to them |
 | Readable git-ignored folders | None | Exceptions to M13's ignored-file rule, such as dependency folders. Organization only |
-| Content scanning (M19) | Secrets on; redact reads, refuse writes and MR text | Can switch reads to block |
+| Read allowlist | None | The only paths the agent may read; set by the organization, a data class or a repository (M13) |
+| Require a write allowlist | Off | Every repository must define where the agent may write (M8) |
+| Allowed hard-to-review content | None | Paths where binary data, long lines or encoded blobs may be written (M6) |
+| Paths allowing hidden or bidirectional characters | None | For example locale or translation files. Organization only, because this loosens a restriction (M20) |
+| Content scanning | Secrets on; redact reads, refuse writes and MR text | Can switch reads to block (M19) |
 | Organization data patterns | None | Precise patterns for the organization's own identifiers (M19) |
 | Personal-data detection | Off | Generic detectors, opt-in (M19) |
 | Health pack | Off | HL7v2, FHIR, DICOM and national health ID detectors, opt-in per organization or data class (M19) |
 | Pastes | Allowed after confirmation when scanning finds something | Per data class: allowed, confirm, or off (M19) |
 | Test and CI output detail | Full | Per data class: full, summary, or names only (M15) |
 | Allowed image and link domains | The source control host only | For images and links in MR text and markdown files (M20) |
-| Paths allowing hidden or bidirectional characters | None | For example locale or translation files (M20). Organization only, because this loosens a restriction |
-| Require a write allowlist | Off | Every repository must define where the agent may write (M8) |
-| Pending-changes mode | Off | Agent changes held outside the working tree until the developer applies them (M22) |
-| Source control host | None; must be set | Host URL and API type, and how developers obtain a token. Use the narrowest token the host offers (M24) |
-| Allowed MR target branches | The default branch | Other branches MRs may target (M24) |
-| Network | System settings | HTTPS proxy and extra CA certificates, often needed for self-hosted hosts and inspecting proxies. Inspecting proxies must exempt model endpoints or follow the logging rules (P11) |
-| Usage limits | None | Tokens or spend per developer per day, and per session |
-| Enabled | On | Set to off to stop the harness everywhere the policy reaches (section 12) |
+
+**Review and source control**
+
+| Setting | Default | Notes |
+|---|---|---|
+| Phase size warning | Set during the pilot | A size measure (changed lines and files) standing in for about one hour of review. The harness warns above it, never refuses (M4) |
 | Sensitive paths | None | Paths whose changes are pointed out in phase summaries (M4). Keep the list short |
-| Allowed hard-to-review content | None | Paths where binary data, long lines or encoded blobs may be written (M6) |
+| Pending-changes mode | Off | Agent changes held outside the working tree until the developer applies them (M22) |
+| Allowed MR target branches | The default branch | Other branches MRs may target (M24) |
+
+**Installation and operations**
+
+| Setting | Default | Notes |
+|---|---|---|
+| Enabled | On | Set to off to stop the harness wherever the policy reaches (section 12) |
+| Managed-device marker | None | MDM marker that makes a missing policy stop the harness. Organization builds have it built in (M18) |
+| Minimum harness version | None | Older versions refuse to run (M18) |
 | Credential storage | Operating system credential store | Or the kernel keyring on headless Linux, or sign in each session (M18) |
-| Session maximum age | Set by the organization | After this, session files are removed and a session cannot be resumed (M10) |
+| HTTPS proxy and extra CA certificates | System settings | Often needed for self-hosted hosts and inspecting proxies. An inspecting proxy must exempt model endpoints or follow the logging rules (P11) |
 | Support details | None | Help channel or contact, and acceptable-use policy link, shown at startup and in errors |
 
 **M15. Reading test results.** The developer runs tests, in their IDE or terminal, as they normally would. The agent reads the results through a fixed, read-only action:
@@ -315,6 +346,7 @@ Choosing a provider is configuration, not a separate implementation.
 - **Refuse a writable policy.** The harness will not start if the developer's account can modify the policy file, because then the developer could change it. Signing the policy is not required in version 1: file permissions and managed delivery stop developers from changing it, and signing would only guard against administrators, who could replace the executable anyway. It remains a possible later hardening step.
 - **Fail closed.** A policy that is present but unreadable, malformed or invalid always stops the harness; it never falls back to weaker settings. On a managed device, a missing policy also stops it. The harness treats a device as managed if either the executable is an organization build with "managed" set at build time, or an MDM marker exists (a managed-preferences domain on macOS, or a policy registry key on Windows, written only by device management).
 - **Unmanaged mode.** Only when there is no policy and no sign that the device is managed does the harness run on the developer's own settings, with a clear "unmanaged" banner. The guarantees in this document hold only for managed installs.
+- **Policy rechecked before every model request.** The harness checks whether the policy has changed before each model request and applies the new version, so a change such as `enabled` set to false takes effect within one request of reaching the machine. If the new policy is broken, the harness stops (fail closed, above).
 - **Organization-controlled updates.** The harness never updates itself. Organizations push new versions through the same channel as installs, and the policy can set a minimum version below which the harness refuses to run.
 - **Build from source.** Builds are reproducible from a documented command. Releases include checksums, an SBOM and signed build provenance, and the signing step is documented so organizations can sign their own builds.
 - **FIPS build.** For settings that require FIPS 140-3 cryptography, a build uses Go's built-in FIPS mode (available since Go 1.24). Organizations check the current validation status of Go's cryptographic module against their own requirements.
@@ -505,7 +537,7 @@ To be agreed with leadership before a pilot:
 ### Kill switch
 
 - **With a gateway:** turn access off for a user, a team or everyone at the gateway (M17). This takes effect on the next request.
-- **Without a gateway:** revoke the affected API keys or the Bedrock role, and push a policy with `enabled` set to false through device management. The harness refuses to start, and running sessions stop at their next policy check.
+- **Without a gateway:** revoke the affected API keys or the Bedrock role, and push a policy with `enabled` set to false through device management. The harness refuses to start, and running sessions stop before their next model request, because the harness rechecks the policy before every request (M18). The slow part is delivery: device management can take minutes to hours to reach every machine, so revoking credentials is what takes effect at once.
 
 ### Runbook: restricted data was sent to the model
 
@@ -523,54 +555,10 @@ What each party provides to get the tool running. Nothing in the organization or
 
 ### Organization (policy file, M14)
 
-**Required**
-
-| Setting | Contents |
-|---|---|
-| Model provider | Claude API, Amazon Bedrock, OpenAI-compatible, or an organization gateway (recommended for production) (M17) |
-| Approved models | Specific model IDs or inference profiles the harness may use. Cross-region profiles only if approved (M17) |
-| Provider endpoint | Bedrock region (including GovCloud), or the base URL of an OpenAI-compatible, regional or gateway endpoint |
-| Model credential method | Gateway: the SSO sign-in details for short-lived tokens, and optionally the device certificate to present. Claude API or OpenAI: developers enter a key issued to them. Bedrock: IAM Identity Center start URL, sign-in region, account ID and role name |
-| Managed-device marker | How the harness recognizes a managed device, if not an organization build (M18) |
-| Source control host | URL and type (GitLab, GitHub, Bitbucket) |
-| Source control credential method | An OAuth application ID, where the host supports device sign-in. Otherwise a personal access token with the narrowest scope that can read the repository and open MRs |
-| Log destination | S3 (bucket, region, upload role, the organization hashing key, a KMS key for audit events, and separate KMS keys and a session key store for audit details, escrow and transcripts), the model gateway's log, or local only (M10, M16) |
-
-**Often needed**
-
-| Setting | Contents |
-|---|---|
-| Extra CA certificates | Internal certificate authorities used by self-hosted hosts or inspecting proxies |
-| HTTPS proxy | When outbound traffic must go through one. If it inspects HTTPS, exempt model endpoints or bring its logs under the same controls (P11) |
-
-**Defaults to review**
-
-| Setting | Default |
-|---|---|
-| **Log retention: audit events** | **6 years** (matches HIPAA; check your jurisdiction) |
-| **Log retention: transcripts** | **90 days**, if turned on |
-| Phase size warning | Set during the pilot, as a stand-in for about one hour of review |
-| **Log retention: audit details** | **1 year** |
-| Log content | Audit events and audit details |
-| Organization hashing key | Rotated yearly |
-| Breach scoping for unrebuildable content | Worst-case scoping (escrow recommended where breach-notification law applies) |
-| Local file retention | A few days after confirmed upload |
-| Data classes | One class for all repositories; unmatched repositories get the most restrictive class (M23) |
-| Provider features, read allowlist | None approved, none |
-| Allowed MR target branches | The default branch (M24) |
-| Extra protected and unreadable paths | None beyond M8 and M13 |
-| Readable git-ignored folders | None |
-| Content scanning | Secrets on; redact reads, refuse writes and MR text |
-| Organization data patterns, personal-data detection, health pack | None, off, off |
-| Pastes, test and CI output detail | Confirm when scanning finds something, full |
-| Allowed image and link domains | The source control host only |
-| Paths allowing hidden or bidirectional characters | None |
-| Require a write allowlist, pending-changes mode | Off, off |
-| Usage limits | None |
-| Support details | None |
-| Sensitive paths, allowed hard-to-review content | None |
-| Credential storage | Operating system credential store |
-| Minimum harness version | None |
+Every organization setting, with its default, is in the tables in M14. In summary:
+- **Required:** the model provider, approved models, endpoint and credential method; the source control host and credential method; and the log destination.
+- **Often needed:** an HTTPS proxy and extra CA certificates.
+- **Defaults to review before the first production upload:** the three log retention periods, shown in bold in M14.
 
 ### Repository (protected files the agent cannot edit)
 
