@@ -123,7 +123,8 @@ Logs are written locally first, to a file only the developer's account can read,
 | **Log retention** | **5 years** | **Review this before the first production upload.** S3 Object Lock in compliance mode cannot shorten retention for logs already written (M15). |
 | Log content | Full transcripts | Or audit only (M9) |
 | Log destination | Local only | Or Amazon S3 (M15) |
-| Model provider | None; must be set | Claude API or Amazon Bedrock (M16), plus the approved models |
+| Model provider | None; must be set | Claude API, Amazon Bedrock or OpenAI-compatible (M16), plus the approved models |
+| Minimum harness version | None | Older versions refuse to run (M17) |
 | Sandboxed agent-run tests | Off | Only if C2 is built |
 | Test service containers | None | Images the sandbox may start for tests, such as a database (C2) |
 | Risky-code flags | Off | C3 |
@@ -149,11 +150,26 @@ Developers run agent-written tests before or after reviewing them, as they would
 - **Querying.** Logs are partitioned by date for querying with Athena, which costs nothing until someone runs a query.
 - **Optional upgrades.** Kinesis Data Firehose in front of S3 for near-real-time delivery or very large volumes, and CloudWatch Logs for alerting (for example, on repeated protected-path refusals).
 
-**M16. Model providers.** Organization policy selects one of:
-- **Claude API.** A key per user or team, stored in the operating system's credential store (macOS Keychain, Windows Credential Manager, libsecret on Linux), never in an environment variable or a file in the repository. Console workspaces provide usage tracking, spending limits and key revocation.
-- **Amazon Bedrock.** Short-lived credentials from IAM Identity Center, for a role that can only call `bedrock:InvokeModel*` on the approved models. Usage falls under the organization's AWS agreement and is recorded in CloudTrail. When logs also go to S3 (M15), one sign-in can cover both, through a single role that can only invoke the approved models and write logs.
+**M16. Model providers.** The harness owns the agent loop and every tool. It talks to models through a small provider interface, whose adapters only translate messages, tool definitions, tool calls and tool results. Every rule in this document is enforced in the harness, so it applies the same way whichever model is used. Organization policy selects a provider and lists the approved models.
+- **Provider-specific features** such as prompt caching or extended reasoning are used when a provider offers them, never required.
+- **Each model is evaluated before approval.** Models differ in how reliably they call tools, follow a plan and keep phases small. The project ships an evaluation suite that organizations run before adding a model to the approved list.
+- **Each provider needs its own data-processing approval** (P4) and its own credential, held by the harness (M2).
 
-Both use one code path in the harness. The choice is configuration, not a separate implementation.
+Supported providers:
+- **Claude API (Must).** A key per user or team, stored in the operating system's credential store (macOS Keychain, Windows Credential Manager, libsecret on Linux), never in an environment variable or a file in the repository. Console workspaces provide usage tracking, spending limits and key revocation.
+- **Amazon Bedrock (Must).** Short-lived credentials from IAM Identity Center, for a role that can only call `bedrock:InvokeModel*` on the approved models. Usage falls under the organization's AWS agreement and is recorded in CloudTrail. When logs also go to S3 (M15), one sign-in can cover both, through a single role that can only invoke the approved models and write logs. Bedrock also hosts other vendors' models, which the same adapter can reach through Bedrock's Converse API.
+- **OpenAI API and OpenAI-compatible endpoints (Should).** An API key stored as for the Claude API. The same adapter covers self-hosted open-weight models served behind an OpenAI-compatible endpoint (for example vLLM), for organizations that require inference to stay on their own infrastructure. Agentic coding is sensitive to model quality, so such models must pass the same evaluation.
+
+Choosing a provider is configuration, not a separate implementation.
+
+**M17. Distribution and managed configuration.** Organizations can deploy the tool and its policy (M13) with the device management they already use.
+- **One executable, no runtime.** The harness is written in Go and built as a single executable for each operating system and processor type. The only other requirement on developer machines is `git`.
+- **Standard packages.** A signed and notarized `.pkg` for macOS (Jamf, Intune, Kandji), a signed MSI for Windows (Intune, Configuration Manager), and `.deb` and `.rpm` packages for Linux (package repository, Ansible, Puppet). Homebrew and winget packages for individuals evaluating it.
+- **Policy in a fixed system location.** macOS: a managed preferences domain delivered as an MDM configuration profile, or `/Library/Application Support/Hermit/policy.json`. Windows: `HKLM\SOFTWARE\Policies\Hermit` (Group Policy or Intune, with an ADMX template), or `C:\ProgramData\Hermit\policy.json`. Linux: `/etc/hermit/policy.json`.
+- **Refuse a writable policy.** The harness will not start if the developer's account can modify the policy file, because then the developer could change it.
+- **Unmanaged mode.** With no system policy, the harness runs on the developer's own settings and shows a clear "unmanaged" banner. The guarantees in this document hold only for managed installs.
+- **Organization-controlled updates.** The harness never updates itself. Organizations push new versions through the same channel as installs, and the policy can set a minimum version below which the harness refuses to run.
+- **Build from source.** Builds are reproducible from a documented command. Releases include checksums, an SBOM and signed build provenance, and the signing step is documented so organizations can sign their own builds.
 
 ### Should
 
@@ -184,7 +200,7 @@ These aren't features of the tool, but the design depends on them:
 - **P1.** In every repository the agent works on, CI secrets are available only to protected branches (in GitLab, CI/CD variables marked *protected*; other hosts have equivalents). Agent task branches are never protected.
 - **P2.** Pipelines for agent branches run on runners with restricted network access and no deployment credentials. Agent-written tests run in CI, and test setup code can execute anything the runner allows. This is why P1 and P2 are essential even with M7.
 - **P3.** MRs containing agent-written changes go through the same human review as any other MR.
-- **P4.** Model API access is approved under the organization's data-processing agreements.
+- **P4.** Each model provider the organization enables is approved under its data-processing agreements.
 - **P5.** If logs go to S3 or the model provider is Bedrock: an AWS account with IAM Identity Center, the log bucket and KMS keys set up as in M15, Bedrock model access enabled for the approved models, and a role limited to those permissions.
 - **P6.** Repositories write JUnit XML test reports from their build tool (M14). If sandboxed agent-run tests (C2) are built and enabled: Podman or Docker on developer machines, and synthetic or seeded data for any service containers.
 
@@ -209,8 +225,8 @@ To be agreed with leadership before a pilot:
 
 ## 11. Open questions
 
-1. **Implementation language and distribution:** how developers install and update it on macOS, Windows and Linux.
-2. **Approved models:** which Claude models to allow, and whether the policy should allow a cheaper model for simple steps.
+1. **Policy signing:** whether, beyond file permissions (M17), the harness should verify that the policy file is signed by the organization.
+2. **Approved models:** which models to allow for each provider, what score on the evaluation suite (M16) a model needs, and whether the policy should allow a cheaper model for simple steps.
 3. **Source control host credentials:** a per-user token (MRs attributed to the developer) or a project token; how the harness obtains and stores it.
 4. **Phase size:** what counts as small enough to review and commit, and whether it is set per repository.
 5. **Repositories without test reports or CI:** what the agent does when there are no JUnit reports to read, and whether it should help the developer set them up (the configuration files are protected, so the developer would make the change).
