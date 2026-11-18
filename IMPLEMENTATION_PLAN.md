@@ -1,6 +1,6 @@
 # Implementation Plan: Hermit
 
-Status: draft. The specification is [REQUIREMENTS.md](REQUIREMENTS.md); requirement IDs (M1–M24, S1–S7, P1–P11) refer to it. Milestones are numbered 0–13 and are never written with an "M", to keep them distinct from requirement IDs.
+Status: draft. The specification is [REQUIREMENTS.md](REQUIREMENTS.md); requirement IDs (M1–M24, S1–S7, P1–P11) refer to it. Milestones are numbered 0–14 and are never written with an "M", to keep them distinct from requirement IDs.
 
 This plan assumes Hermit is built with an AI coding agent (Claude Code), following Anthropic's [best practices for Claude Code](https://code.claude.com/docs/en/best-practices). The practices that shape it:
 
@@ -23,6 +23,7 @@ One Go module that builds the `hermit` executable (M18). Packages are split so t
 | `internal/fsguard` | The only code that touches the repository's files: root confinement, path normalization, protected, unreadable and allowlisted paths, file-type detection, atomic and conditional writes | M8, M13, M21, M6 |
 | `internal/scan` | Secrets, organization patterns, personal data, health pack, reserved test values | M19 |
 | `internal/render` | Escape stripping, hidden and bidirectional characters, link and image handling, on-screen masking | M20 |
+| `internal/tooldef` | The `Set` type carrying tool names, descriptions and schemas to `provider`; only `tools` may construct one | M1 |
 | `internal/tools` | The agent's fixed tool set, each tool a thin layer over `fsguard`, `scan`, `scm` and `testresults`; tracks what the agent has read so stale edits are refused | M1, M2, M3, M9 |
 | `internal/loop` | The agent loop: messages, tool calls, condensing long conversations, standing instructions | M1, M11, S7 |
 | `internal/provider` | Provider interface and adapters: Anthropic, Bedrock, OpenAI-compatible, gateway, scripted | M17, S4 |
@@ -40,10 +41,12 @@ One Go module that builds the `hermit` executable (M18). Packages are split so t
 | Rule | How it is enforced |
 |---|---|
 | Every repository read and write goes through `fsguard`, including test reports | CI dependency check: only `fsguard` may call the file system on repository paths. `testresults` reads report files through `fsguard`, so M13 applies to them |
-| Every byte sent to the model passes through `scan` | Compiler: the provider interface accepts only `scan.Cleared`, a type with unexported fields that only `scan` can construct. Text the harness itself writes (system prompt, standing instructions, tool definitions) uses `scan.Fixed`, whose parameter has an unexported string type, so callers outside `scan` can pass only string constants, never variables. CI: `provider` may not import `fsguard`, `tools`, `scm` or `testresults`, so it has no other source of content |
+| Every byte sent to the model passes through `scan` | Compiler: the provider interface accepts only `scan.Cleared`, a type with unexported fields that only `scan` can construct. Text the harness itself writes (system prompt, standing instructions) uses `scan.Fixed`, whose parameter has an unexported string type, so callers outside `scan` can pass only string constants, never variables. Tool definitions are structured data (names, descriptions, JSON schemas generated from Go types), so they reach the provider as a `tooldef.Set` from a small package `internal/tooldef`, which `provider` may import; CI allows only `tools` to call its constructor. CI: `provider` may not import `fsguard`, `tools`, `scm` or `testresults`, so it has no other source of content |
 | Every byte displayed, and every MR text sent, passes through `render` | Compiler: `tui` accepts only `render.Safe`, and `scm` accepts MR text only as `render.ApprovedMRText`. CI: only `tui`'s approval step may call the constructor for `ApprovedMRText` (M20), because the compiler alone can't restrict which package calls an exported function |
 | Every tool call is logged | Tools run only through one wrapper in `loop` that records the call before and after. A test enumerates every tool and checks that calling it produces audit events |
-| Only `git` runs, and only through one package | CI dependency check: only `internal/gitcmd` may import `os/exec`, and it runs a fixed list of git subcommands. Everything that needs git (policy reading the remote, the worktree, the git-ignored check, undo) goes through it. This is what makes "the agent runs no commands" (M2) checkable, and lets a test enumerate every git invocation |
+| Only `git` runs, and only through one package | CI dependency check: only `internal/gitcmd` may import `os/exec`, and it runs a fixed list of git subcommands. Everything that needs git (policy reading the remote, the worktree, the git-ignored check, undo) goes through it. This is what makes "the agent runs no commands" (M2) checkable, and lets a test enumerate every git invocation. `gitcmd` also stops git from starting other programs: every call passes `--no-pager` and `-c core.fsmonitor=false`, diffs add `--no-ext-diff --no-textconv`, and subcommands that would run clean or smudge filters on working-tree content are left off the list (blob hashes for read records are computed in Go instead). Network subcommands such as `fetch`, `pull` and `ls-remote` are never on the list. A hostile test uses a repository whose configuration sets an fsmonitor program, filters, a textconv driver, an external diff tool and a pager, and checks that none of them runs |
+
+The dependency checks apply to non-test code only. Test files and test fixtures may do what the rules forbid, for example creating hard links or building a fixture that should fail to compile.
 
 Other dependency rules, also checked in CI from milestone 0:
 - `fsguard`, `scan` and `render` import nothing from the rest of Hermit.
@@ -87,7 +90,7 @@ Delivers:
 - **No Go changes:** if no `.go` files, `go.mod`, `go.sum`, test fixtures or the `Makefile` changed in the working tree, it allows the stop, so documentation-only sessions aren't held up.
 - **A question is pending:** if `QUESTION.md` exists, it allows the stop and shows the question to the developer. This is how "stop and ask" (section 2) works when the requirements are ambiguous. The developer answers, deletes the file and resumes the session.
 
-A `SessionStart` hook keeps the question file from turning the Stop hook off for good: at the start of every session it renames any existing `QUESTION.md` to `QUESTION.unanswered-<date>.md` and warns the developer. So a `QUESTION.md` that the Stop hook sees was always written in the current session.
+A `SessionStart` hook, limited to the `startup|resume` matcher so it doesn't fire when a session is compacted or cleared partway through, keeps the question file from turning the Stop hook off for good. At the start of a session it renames any existing `QUESTION.md` to `QUESTION.unanswered-<date>.md` and warns the developer. So a `QUESTION.md` that the Stop hook sees was always written in the current session.
 
 The Stop hook does not use `stop_hook_active` as an exception, because that would let the agent stop after a single retry with tests still failing. An endless loop is prevented by Claude Code itself: per the [best-practices page](https://code.claude.com/docs/en/best-practices#enforce-the-check-with-a-stop-hook), after eight blocked stops in a row with no tool call between them, it overrides the next block and ends the turn (`CLAUDE_CODE_STOP_HOOK_BLOCK_CAP` changes the number). Using the question file to get past failing tests is visible to the developer, who sees the question.
 
@@ -136,6 +139,7 @@ Delivers: `internal/policy` with schema validation of the full settings table in
 
 Checks:
 - A harness older than the policy's minimum version refuses to start.
+- `gitcmd` hostile test: a repository configured with an fsmonitor program, filters, a textconv driver, an external diff tool and a pager runs none of them.
 - A malformed, unreadable or developer-writable policy stops the harness.
 - A missing policy on a device with a managed marker stops the harness; with no marker, unmanaged mode.
 - An unmatched repository gets the most restrictive ranked class.
@@ -182,13 +186,13 @@ Checks:
 
 Requirements: M1, M2, M9, M3 (stale-edit detection), M10 (one repository per session, resume rules, condensed summaries as transcripts), S4, S5 (tool-call parser), S7. Depends on milestones 2, 3 and 4.
 
-Delivers: `internal/tools` (the fixed tool set, no shell or network tools; read tracking and stale-edit refusal using `fsguard`'s conditional write), `internal/loop` (with every model-bound message passing through `scan` and every displayed message through `render`; one repository per session; conversation state and condensed summaries kept in `localstore` as local transcripts; resume only within the session maximum age), the provider interface, including a hook for per-request metadata (milestones 7 and 8), the audit event interface with an in-memory recorder for tests (milestone 8 implements the real one), `scan.Fixed` for harness-written text, and the scripted provider. Standing instructions (S7).
+Delivers: `internal/tools` (the fixed tool set, no shell or network tools; read tracking and stale-edit refusal using `fsguard`'s conditional write), `internal/loop` (with every model-bound message passing through `scan` and every displayed message through `render`; one repository per session; conversation state and condensed summaries kept in `localstore` as local transcripts; resume only within the session maximum age), the provider interface, including a hook for per-request metadata (milestones 7 and 8), the audit event interface with an in-memory recorder for tests (milestone 8 implements the real one), `scan.Fixed` for harness-written text, `internal/tooldef` for tool definitions, and the scripted provider. Standing instructions (S7).
 
 Checks:
 - Scripted hostile sessions from S4 (write `.git/hooks/pre-commit`, read `.env`, overwrite a newer developer edit, malformed tool calls) are all refused, with the refusal recorded.
 - A planted secret in a file the agent reads reaches the scripted provider redacted.
 - Code that passes a string variable to `scan.Fixed` doesn't compile; a string constant does.
-- The required paths in section 1 hold: code that passes a plain string to a provider doesn't compile, and every tool in the enumerated tool set produces audit events in the in-memory recorder when called.
+- The required paths in section 1 hold: code that passes a plain string to a provider doesn't compile, a `tooldef.Set` built outside `tools` fails the CI check, and every tool in the enumerated tool set produces audit events in the in-memory recorder when called.
 - No tool exists that runs a command or opens a network connection: a test enumerates the tool set.
 - The scripted provider can't be enabled through organization policy.
 - A session can't switch repositories, and resuming after the session maximum age is refused.
@@ -211,7 +215,7 @@ Delivers: adapters for the Claude API, Bedrock, OpenAI-compatible endpoints and 
 Checks:
 - Adapter contract tests against recorded responses, no live calls in `make check`.
 - An unapproved model, cross-region profile or feature is refused before any request.
-- A loopback port held by `ssh` or an unidentified process is refused for a local-only class.
+- A loopback port held by `ssh` or an unidentified process is refused for a local-only class (on macOS, subject to open decision 5).
 - Requests stop with a clear message once the session or daily usage limit is reached.
 - Gateway requests carry the repository identity and class (recorded-request test).
 - Every AWS SDK client (Bedrock, and in milestone 8 S3 and KMS) and any other SDK client is built with `netclient`'s transport, never the SDK's default HTTP client, so the proxy, CA and HTTPS rules apply. A test inspects each constructed client.
@@ -222,14 +226,15 @@ Checks:
 Requirements: M10, M16. High effort. Can run in parallel with milestones 6, 7 and 9.
 
 Delivers:
-- `internal/audit` on top of `localstore`, implementing the audit event interface from milestone 5: three tiers, keyed hashes with a per-session key wrapped by the organization's KMS key (usable offline, no KMS call per field), read records (blob hash and line range), escrow option, condensed summaries logged as transcripts, hash chain, anchoring (the chain head added to each gateway request through milestone 7's metadata mechanism, or uploaded to S3 every minute without a gateway), batched S3 upload with retry.
-- `cmd/hermit-audit`, separate tooling the organization runs on its own infrastructure, not on developer machines: scheduled cross-checks of Hermit's logs against the gateway's request log, CloudTrail or provider usage records, checks that uploaded logs reach their anchors, alerts on gaps, and investigator search by keyed hash, decrypting each session's hashing key.
-- AWS setup templates for the bucket, keys and roles in M16 (for P5), and for running the cross-checks.
+- `internal/audit` on top of `localstore`, implementing the audit event interface from milestone 5: three tiers, keyed hashes with a per-session key, wrapped locally with the organization's public wrapping key from the policy (no credentials, network or KMS call needed, for every log destination), read records (blob hash and line range), escrow option, condensed summaries logged as transcripts, hash chain, anchoring (the chain head added to each gateway request through milestone 7's metadata mechanism, or uploaded to S3 every minute without a gateway), batched S3 upload with retry.
+- `cmd/hermit-audit`, separate tooling the organization runs on its own infrastructure, not on developer machines: scheduled cross-checks of Hermit's logs against the gateway's request log, CloudTrail or provider usage records, checks that uploaded logs reach their anchors, alerts on gaps, and investigator search by keyed hash, unwrapping each session's hashing key through KMS.
+- AWS setup templates for the bucket, keys and roles in M16 (for P5), and for running the cross-checks; the asymmetric wrapping key, with decryption limited to an investigator role; and a documented, scripted procedure for each wrapping-key period: create the new key, publish its public key in the policy, and schedule the old key's deletion.
 
 Checks:
 - Cross-checks flag model usage with no matching session, and a session whose uploaded log stops short of its anchor (tests against fixture records).
 - No plaintext path, query or argument appears in an audit event (property test over generated sessions).
-- Hashing works with no network; the session key is wrapped before upload, and the upload role can encrypt with the wrapping key but not decrypt (tested against the AWS templates).
+- Hashing and wrapping work with no network and no credentials, for each log destination; a wrapped session key can't be unwrapped with any developer or upload role, only the investigator role (tested against the AWS templates).
+- After a policy update with a new public key, new sessions wrap with the new key, and earlier sessions keep the key ID they were wrapped with.
 - Truncating the local log is detected against the anchor.
 - Upload tests against a local S3-compatible server; a separate manual test against a real AWS account, verifying Object Lock modes and crypto-shredding.
 
@@ -265,13 +270,21 @@ Delivers: reproducible builds, signed and notarized macOS package, signed MSI, d
 
 Checks: two independent builds produce identical executables; packages install and uninstall cleanly on each OS, and uninstall removes everything (M10); developer packages contain `hermit` only, not `cmd/hermit-audit`, which ships separately for the organization's own infrastructure.
 
-### Milestone 13: Evaluation, validation and documentation
+### Milestone 13: Evaluation suite
 
-Requirements: M11, M17 (evaluation suite), S5, S6, M22 (IDE guidance), section 12 (operations).
+Requirements: M17 (evaluation before approval), M11. Depends on milestones 5 and 7, so it can run alongside 8–12. Organizations need it to approve a model before a pilot, so finishing it early shortens the path to a pilot.
 
-Delivers: the evaluation suite organizations run before approving a model; the validation support pack; recommended IDE settings; administrator documentation, including the kill switch and incident runbook; pilot materials for the success measures in section 9.
+Delivers: the evaluation suite organizations run before approving a model: scripted tasks on sample repositories that measure tool-call reliability, plan quality, phase size and whether the model keeps within the rules, with a report per model.
 
-Checks: the evaluation suite runs end to end against at least two providers; a reviewer who did not build Hermit can install and configure it from the documentation alone.
+Checks: the suite runs end to end against at least two providers, including a local model.
+
+### Milestone 14: Validation and documentation
+
+Requirements: S5, S6, M22 (IDE guidance), section 12 (operations), M11 (pilot measures).
+
+Delivers: the validation support pack; recommended IDE settings; administrator documentation, including the kill switch and incident runbook; pilot materials for the success measures in section 9.
+
+Checks: a reviewer who did not build Hermit can install and configure it from the documentation alone; the validation pack includes current results from S4, S5 and the evaluation suite.
 
 ## 4. Order and parallel work
 
@@ -290,7 +303,8 @@ Checks: the evaluation suite runs end to end against at least two providers; a r
 | 10 Test results | 6, 9 | 7, 8 |
 | 11 Terminal interface and setup check | 6, 7, 8, 10 | — |
 | 12 Packaging and distribution | 11 | — |
-| 13 Evaluation, validation and documentation | 12 | — |
+| 13 Evaluation suite | 5, 7 | 8–12 |
+| 14 Validation and documentation | 12, 13 | — |
 
 - **Critical path:** policy, then credentials and local storage, the file access guard, and scanning and rendering, then the agent loop. The loop is where every model-bound message passes, so nothing that talks to a model is built before `fsguard`, `scan`, `render` and `localstore` exist.
 - **Parallel tracks:** milestones 2, 3 and 4 touch separate packages and can run at the same time. So can milestones 6, 7, 8 and 9. Milestone 10 waits for 6 and 9: it checks freshness against snapshots and summarizes CI results retrieved through `scm`.
@@ -309,15 +323,15 @@ Checks: the evaluation suite runs end to end against at least two providers; a r
 | M7 Tests | 10 | M19 Content scanning | 4 |
 | M8 Protected paths | 3, 6 | M20 Safe rendering | 4, 9, 11 |
 | M9 Dependencies | 5 | M21 Path safety | 3 |
-| M10 Logging | 2, 5, 8 | M22 Code that runs on its own | 6, 13 |
-| M11 Competitive | 13 (measured in the pilot) | M23 Data classes | 1, 7 |
+| M10 Logging | 2, 5, 8 | M22 Code that runs on its own | 6, 14 |
+| M11 Competitive | 13, 14 (measured in the pilot) | M23 Data classes | 1, 7 |
 | M12 Terminal interface | 11 | M24 Source control | 9 |
-| S1 Commands in prose | 11 | S5 Fuzzing | 3, 4, 5, 10, 13 |
-| S2 Guided MR review | 9 | S6 Validation pack | 13 |
+| S1 Commands in prose | 11 | S5 Fuzzing | 3, 4, 5, 10, 14 |
+| S2 Guided MR review | 9 | S6 Validation pack | 14 |
 | S3 Setup check | 11 | S7 Standing instructions | 5 |
 | S4 Scripted provider | 5 | | |
 
-Prerequisites P1–P11 are organizational. Milestone 13's documentation covers them, and milestone 8 supplies AWS templates for P5. P10, the independent penetration test, happens after milestone 12 and before any production pilot.
+Prerequisites P1–P11 are organizational. Milestone 14's documentation covers them, and milestone 8 supplies AWS templates for P5. P10, the independent penetration test, happens after milestone 12 and before any production pilot.
 
 ## 6. Open decisions
 
@@ -325,7 +339,7 @@ Prerequisites P1–P11 are organizational. Milestone 13's documentation covers t
 2. **Terminal interface library:** for example Bubble Tea, or a smaller library with less to review.
 3. **Which source control host comes first** for milestone 9 (assumed GitLab).
 4. **Which provider comes first** for the first usable build (assumed the Claude API).
-5. **Listening-process checks on Windows,** which need a separate implementation; confirm it is feasible before committing to local-only classes on Windows.
+5. **Listening-process checks on macOS and Windows** (milestone 7). Linux exposes socket owners through `/proc`, and Windows through `GetExtendedTcpTable`, which Go can call without cgo. macOS has no simple Go API; the usual libraries run `lsof`, which would break the rule that only `gitcmd` runs a process, and cgo would complicate reproducible builds. The options are native system calls without cgo (Go can call libSystem functions such as `proc_pidinfo` the way its runtime does, at the cost of some low-level code), or a second, narrowly listed exception to the process rule (`lsof` with fixed arguments). Recommendation: try native calls first, and if they prove impractical, ship local-only classes on Linux and Windows first rather than weaken the rule.
 6. **How `fsguard` decides whether a file is git-ignored.** This matters because ignored files are unreadable by default (M13). The options:
    - **Ask git** (`git check-ignore --stdin -z`): always matches git's behavior, including global and per-repository exclude files, but runs a process, which `fsguard` is meant to avoid.
    - **Reimplement gitignore matching:** keeps `fsguard` self-contained, but can drift from git's behavior, and a mismatch could make an ignored file readable.
