@@ -116,7 +116,11 @@ Logs are written locally first, to a file only the developer's account can read,
 
 **M12. Files the agent cannot read.** Anything the agent reads is sent to the model API, so the harness refuses to read files that must never leave the developer's machine. The default list covers `.env*`, private keys and certificates (`*.pem`, `*.key`, `id_*`), and credential files. Each repository can add to it, for example data directories that hold restricted or regulated data, in `.agentignore` (M7). Search results never include these files' contents.
 
-**M13. Organization policy.** The organization delivers a policy file through its usual software and configuration distribution. Developers cannot change it, and it overrides developer and repository settings. Repository configuration (such as `.agentignore`) can only add restrictions, never remove them. The policy covers at least:
+**M13. Organization policy.** The organization delivers a policy file through its usual software and configuration distribution. Developers cannot change it, and it overrides developer and repository settings. Repository configuration (such as `.agentignore`) can only add restrictions, never remove them.
+
+**The policy contains no secrets.** It is on every machine and readable by every developer. It says how each developer obtains their own credentials, and the harness stores those in the operating system's credential store (M2). Per-developer credentials attribute MRs and usage to the right person and can be revoked one at a time. Section 12 lists everything an organization, a repository and a developer provide.
+
+The policy covers at least:
 
 | Setting | Default | Notes |
 |---|---|---|
@@ -129,7 +133,10 @@ Logs are written locally first, to a file only the developer's account can read,
 | Test service containers | None | Images the sandbox may start for tests, such as a database (C2) |
 | Risky-code flags | Off | C3 |
 | Protected and unreadable paths | The defaults in M7 and M12 | The organization can add to them |
-| Source control host | None; must be set | Host URL and API type |
+| Source control host | None; must be set | Host URL and API type, and how developers obtain a token |
+| Network | System settings | HTTPS proxy and extra CA certificates, often needed for self-hosted hosts and inspecting proxies |
+| Usage limits | None | Tokens or spend per developer per day, and per session |
+| Support details | None | Help channel or contact, and acceptable-use policy link, shown at startup and in errors |
 
 **M14. Reading test results.** The developer runs tests, in their IDE or terminal, as they normally would. The agent reads the results through a fixed, read-only action:
 - **Standard reports.** The action reads JUnit XML reports, which most build tools write to a directory that is already gitignored (Maven `target/surefire-reports/`, Gradle `build/test-results/`, pytest `--junitxml`, JUnit reporters for Jest and Mocha). The results path is set in repository configuration the agent cannot edit, with defaults for common build tools.
@@ -176,6 +183,8 @@ Choosing a provider is configuration, not a separate implementation.
 **S1. Commands in prose.** The model is instructed (but not forced) to describe goals rather than write commands for the developer to run. If the model suggests shell commands, the harness flags them as unverified. 
 
 **S2. Guided MR review** (task 6).
+
+**S3. Setup check.** A `hermit doctor` command confirms that the policy loads and the developer cannot modify it, that credentials work, that the model provider and source control host are reachable with the configured proxy and CA certificates, that the test results path is readable, and, when S3 logging is on, that an upload succeeds. Each failure names the setting to fix and the support contact.
 
 ### Could
 
@@ -235,3 +244,105 @@ To be agreed with leadership before a pilot:
 8. **Eclipse users:** whether a terminal plus Eclipse's Git views is comfortable enough in practice.
 9. **IDE test runners:** whether developers will run tests through the build tool so reports are written (M14), or whether the harness needs another way to collect IDE results.
 10. **Containers on Windows and macOS (only if C2 is built):** performance of mounted repositories, and licensing (Docker Desktop requires a paid subscription for larger organizations; Podman does not).
+
+## 12. Configuration reference
+
+What each party provides to get the tool running. Nothing in the organization or repository layers is a secret.
+
+### Organization (policy file, M13)
+
+**Required**
+
+| Setting | Contents |
+|---|---|
+| Model provider | Claude API, Amazon Bedrock, or OpenAI-compatible (M16) |
+| Approved models | Model IDs the harness may use |
+| Provider endpoint | Bedrock region, or the base URL of an OpenAI-compatible or proxied endpoint |
+| Model credential method | Claude API or OpenAI: developers enter a key issued to them. Bedrock: IAM Identity Center start URL, sign-in region, account ID and role name |
+| Source control host | URL and type (GitLab, GitHub, Bitbucket) |
+| Source control credential method | An OAuth application ID, where the host supports device sign-in. Otherwise a personal access token with the narrowest scope that can read the repository and open MRs |
+
+**Often needed**
+
+| Setting | Contents |
+|---|---|
+| Extra CA certificates | Internal certificate authorities used by self-hosted hosts or inspecting proxies |
+| HTTPS proxy | When outbound traffic must go through one |
+
+**Defaults to review**
+
+| Setting | Default |
+|---|---|
+| **Log retention** | **5 years** |
+| Log content | Full transcripts |
+| Log destination | Local. For S3: bucket, region, KMS key ARNs for audit events and for transcripts, and the upload role |
+| Extra protected and unreadable paths | None beyond M7 and M12 |
+| Usage limits | None |
+| Support details | None |
+| Minimum harness version | None |
+| Sandboxed agent-run tests (C2), risky-code flags (C3) | Off |
+
+### Repository (protected files the agent cannot edit)
+
+- `.agentignore`: extra protected and unreadable paths. These can only add restrictions.
+- Test results path, if it is not the build tool's default (M14).
+- If C2 is built: the test command and allowed service containers.
+
+### Developer (once, at first run)
+
+- Sign in to the source control host.
+- Sign in through IAM Identity Center, or enter the model API key issued to them.
+
+The harness stores these in the operating system's credential store, never in a file. `hermit doctor` (S3) checks the result.
+
+### Example policy
+
+Illustrative only; the final format is settled during implementation. This example uses Bedrock, a self-hosted GitLab with an internal CA, and S3 logging.
+
+```json
+{
+  "minimum_version": "1.0.0",
+  "model": {
+    "provider": "bedrock",
+    "region": "us-east-1",
+    "approved_models": ["<bedrock-model-or-inference-profile-id>"],
+    "credentials": {
+      "method": "identity_center",
+      "start_url": "https://example.awsapps.com/start",
+      "sso_region": "us-east-1",
+      "account_id": "123456789012",
+      "role_name": "HermitDeveloper"
+    }
+  },
+  "source_control": {
+    "type": "gitlab",
+    "url": "https://gitlab.example.org",
+    "credentials": { "method": "oauth_device", "client_id": "<oauth-application-id>" }
+  },
+  "network": {
+    "https_proxy": "http://proxy.example.org:3128",
+    "extra_ca_certificates": ["/etc/hermit/example-root-ca.pem"]
+  },
+  "logging": {
+    "retention_years": 5,
+    "content": "full_transcripts",
+    "destination": "s3",
+    "s3": {
+      "bucket": "example-hermit-logs",
+      "region": "us-east-1",
+      "audit_kms_key_arn": "arn:aws:kms:us-east-1:123456789012:key/<audit-key-id>",
+      "transcript_kms_key_arn": "arn:aws:kms:us-east-1:123456789012:key/<transcript-key-id>"
+    }
+  },
+  "paths": {
+    "protected": ["deploy/**"],
+    "unreadable": ["data/restricted/**"]
+  },
+  "usage_limits": { "tokens_per_developer_per_day": 5000000 },
+  "support": {
+    "contact": "#hermit-help",
+    "acceptable_use_url": "https://intranet.example.org/ai-acceptable-use"
+  },
+  "features": { "sandboxed_agent_tests": false, "risky_code_flags": false }
+}
+```
