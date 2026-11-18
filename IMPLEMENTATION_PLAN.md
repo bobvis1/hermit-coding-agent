@@ -27,21 +27,23 @@ One Go module that builds the `hermit` executable (M18). Packages are split so t
 | `internal/loop` | The agent loop: messages, tool calls, condensing long conversations, standing instructions | M1, M11, S7 |
 | `internal/provider` | Provider interface and adapters: Anthropic, Bedrock, OpenAI-compatible, gateway, scripted | M17, S4 |
 | `internal/worktree` | Snapshots, undo, phase file lists, pending-changes mode | M3, M4, M22 |
-| `internal/testresults` | JUnit XML parsing, freshness, detail levels | M15 |
+| `internal/testresults` | JUnit XML parsing (reading reports through `fsguard`), freshness, detail levels | M15 |
+| `internal/gitcmd` | The only package that runs a process: a fixed list of git subcommands, used for the remote, the worktree, the git-ignored check and undo | M2, M3, M13, M23 |
 | `internal/scm` | Fixed source control calls for GitLab and GitHub | M24, S2 |
 | `internal/audit` | Log tiers, keyed hashes, hash chain, upload, anchoring, on top of `localstore` | M10, M16 |
 | `internal/netclient` | The one HTTP client for every outbound connection: proxy, extra CA certificates, HTTPS except on loopback | M14, M17 |
 | `cmd/hermit-audit` | Organization-run tooling, not on developer machines: log cross-checks, anchor checks, alerts, investigator search | M16 |
 | `internal/tui` | Terminal interface on the alternate screen | M12, M20, S1 |
 
-**Required paths.** Four rules carry most of the security, so each is enforced by the compiler or by CI, not by convention:
+**Required paths.** Five rules carry most of the security, so each is enforced by the compiler or by CI, not by convention:
 
 | Rule | How it is enforced |
 |---|---|
-| Every repository read and write goes through `fsguard` | Dependency check in CI: only `fsguard` may call the file system on repository paths |
-| Every byte sent to the model passes through `scan` | The provider interface accepts only `scan.Cleared`, a type with unexported fields that only `scan` can construct. `provider` may not import `fsguard`, `tools`, `scm` or `testresults`, so it has no other source of content |
-| Every byte displayed, and every MR text sent, passes through `render` | `tui` accepts only `render.Safe`, and `scm` accepts MR text only as `render.ApprovedMRText`, which is created only by the approval step (M20) |
+| Every repository read and write goes through `fsguard`, including test reports | CI dependency check: only `fsguard` may call the file system on repository paths. `testresults` reads report files through `fsguard`, so M13 applies to them |
+| Every byte sent to the model passes through `scan` | Compiler: the provider interface accepts only `scan.Cleared`, a type with unexported fields that only `scan` can construct. Text the harness itself writes (system prompt, standing instructions, tool definitions) uses `scan.Fixed`, whose parameter has an unexported string type, so callers outside `scan` can pass only string constants, never variables. CI: `provider` may not import `fsguard`, `tools`, `scm` or `testresults`, so it has no other source of content |
+| Every byte displayed, and every MR text sent, passes through `render` | Compiler: `tui` accepts only `render.Safe`, and `scm` accepts MR text only as `render.ApprovedMRText`. CI: only `tui`'s approval step may call the constructor for `ApprovedMRText` (M20), because the compiler alone can't restrict which package calls an exported function |
 | Every tool call is logged | Tools run only through one wrapper in `loop` that records the call before and after. A test enumerates every tool and checks that calling it produces audit events |
+| Only `git` runs, and only through one package | CI dependency check: only `internal/gitcmd` may import `os/exec`, and it runs a fixed list of git subcommands. Everything that needs git (policy reading the remote, the worktree, the git-ignored check, undo) goes through it. This is what makes "the agent runs no commands" (M2) checkable, and lets a test enumerate every git invocation |
 
 Other dependency rules, also checked in CI from milestone 0:
 - `fsguard`, `scan` and `render` import nothing from the rest of Hermit.
@@ -54,7 +56,7 @@ Other dependency rules, also checked in CI from milestone 0:
 2. **Point at the spec.** For example: *"Implement milestone 3 from IMPLEMENTATION_PLAN.md. The requirements are M21, M8, M13 and M6 in REQUIREMENTS.md. Write the failing tests for every case listed in M21 and S4 first, then implement until `make check` passes."*
 3. **Tests first for security rules.** For `policy`, `localstore`, `fsguard`, `scan` and `render`, the hostile cases from the requirements are written as failing tests before the implementation.
 4. **Run the checks.** The Stop hook (milestone 0) runs `make check` whenever the agent tries to finish with Go changes, so a milestone can't end with failing tests. Ask for the command output as evidence, not a summary. If the agent needs to stop and ask instead (below), it writes the question to `QUESTION.md`, which lets it stop.
-5. **Review against the spec.** The main session saves the milestone's diff to `review/milestone.diff` (gitignored), then asks the read-only `spec-reviewer` subagent to compare that file with the milestone's requirements: every requirement implemented, every listed case tested, gaps that affect correctness only, no style comments. The reviewer reads the diff from the file, so it needs no shell.
+5. **Review against the spec.** The main session saves the milestone's full diff, including new files, against the commit where the milestone started: `git add -N . && git diff <start-commit> > review/milestone.diff` (`review/` is gitignored; plain `git diff` would leave out the new packages most milestones create). It then asks the read-only `spec-reviewer` subagent to compare that file with the milestone's requirements: every requirement implemented, every listed case tested, gaps that affect correctness only, no style comments. The reviewer reads the diff from the file, so it needs no shell.
 6. **A developer reviews and commits.** Nothing merges without a person reading the diff.
 7. **Clear between milestones.** Unrelated history makes later sessions slower and more expensive.
 
@@ -78,16 +80,18 @@ Delivers:
   - a short `CLAUDE.md` (draft below);
   - `.claude/settings.json` with the `Stop` hook below; `ask` for edits to `REQUIREMENTS.md`; `deny` for reading credential files;
   - `.claude/agents/spec-reviewer.md`: tools limited to `Read, Grep, Glob`, instructed to compare the diff file it is given against named requirements and skip style;
-  - `.gitignore` entries for `review/` and `QUESTION.md`.
+  - `.gitignore` entries for `review/` and `QUESTION.md`;
+  - `.claude/rules/security-core.md` with `paths:` set to the security packages, holding the conventions for that code (below).
 
 **The Stop hook** (`scripts/stop-check.sh`) blocks the agent from finishing while `make check` fails, with two exceptions:
 - **No Go changes:** if no `.go` files, `go.mod`, `go.sum`, test fixtures or the `Makefile` changed in the working tree, it allows the stop, so documentation-only sessions aren't held up.
 - **A question is pending:** if `QUESTION.md` exists, it allows the stop and shows the question to the developer. This is how "stop and ask" (section 2) works when the requirements are ambiguous. The developer answers, deletes the file and resumes the session.
 
-It does not use `stop_hook_active` as an exception, because that would let the agent stop after a single retry with tests still failing. Claude Code's own limit on repeated blocks prevents an endless loop. Using the question file to get past failing tests is visible to the developer, who sees the question.
-  - `.claude/rules/security-core.md` with `paths:` set to the security packages, holding the conventions for that code (below).
+A `SessionStart` hook keeps the question file from turning the Stop hook off for good: at the start of every session it renames any existing `QUESTION.md` to `QUESTION.unanswered-<date>.md` and warns the developer. So a `QUESTION.md` that the Stop hook sees was always written in the current session.
 
-Checks: `make check` passes on all three operating systems in CI; the Stop hook blocks a deliberately failing test, allows a documentation-only change, and allows a stop when `QUESTION.md` exists; each dependency rule fails on a deliberate violation.
+The Stop hook does not use `stop_hook_active` as an exception, because that would let the agent stop after a single retry with tests still failing. An endless loop is prevented by Claude Code itself: per the [best-practices page](https://code.claude.com/docs/en/best-practices#enforce-the-check-with-a-stop-hook), after eight blocked stops in a row with no tool call between them, it overrides the next block and ends the turn (`CLAUDE_CODE_STOP_HOOK_BLOCK_CAP` changes the number). Using the question file to get past failing tests is visible to the developer, who sees the question.
+
+Checks: `make check` passes on all three operating systems in CI; the Stop hook blocks a deliberately failing test, allows a documentation-only change, and allows a stop when `QUESTION.md` exists; a `QUESTION.md` left from an earlier session is renamed at session start and no longer lets a failing session stop; the review diff includes a newly created package; each dependency rule fails on a deliberate violation.
 
 Draft `CLAUDE.md`:
 
@@ -128,7 +132,7 @@ paths:
 
 Requirements: M14, M18 (policy location, refuse writable policy, fail closed, managed-device detection, recheck before each request, unmanaged mode, minimum harness version), M23 (class ranking and repository matching). High effort.
 
-Delivers: `internal/policy` with schema validation of the full settings table in M14, per-OS policy locations, the minimum-version check, and data class resolution from the git remote.
+Delivers: `internal/policy` with schema validation of the full settings table in M14, per-OS policy locations, the minimum-version check, and data class resolution from the git remote; and `internal/gitcmd` with its first fixed subcommand (reading the remote). Later milestones add subcommands to that fixed list, and each addition shows up in review.
 
 Checks:
 - A harness older than the policy's minimum version refuses to start.
@@ -178,12 +182,13 @@ Checks:
 
 Requirements: M1, M2, M9, M3 (stale-edit detection), M10 (one repository per session, resume rules, condensed summaries as transcripts), S4, S5 (tool-call parser), S7. Depends on milestones 2, 3 and 4.
 
-Delivers: `internal/tools` (the fixed tool set, no shell or network tools; read tracking and stale-edit refusal using `fsguard`'s conditional write), `internal/loop` (with every model-bound message passing through `scan` and every displayed message through `render`; one repository per session; conversation state and condensed summaries kept in `localstore` as local transcripts; resume only within the session maximum age), the provider interface, including a hook for per-request metadata (milestones 7 and 8), and the scripted provider. Standing instructions (S7).
+Delivers: `internal/tools` (the fixed tool set, no shell or network tools; read tracking and stale-edit refusal using `fsguard`'s conditional write), `internal/loop` (with every model-bound message passing through `scan` and every displayed message through `render`; one repository per session; conversation state and condensed summaries kept in `localstore` as local transcripts; resume only within the session maximum age), the provider interface, including a hook for per-request metadata (milestones 7 and 8), the audit event interface with an in-memory recorder for tests (milestone 8 implements the real one), `scan.Fixed` for harness-written text, and the scripted provider. Standing instructions (S7).
 
 Checks:
 - Scripted hostile sessions from S4 (write `.git/hooks/pre-commit`, read `.env`, overwrite a newer developer edit, malformed tool calls) are all refused, with the refusal recorded.
 - A planted secret in a file the agent reads reaches the scripted provider redacted.
-- The required paths in section 1 hold: code that passes a plain string to a provider doesn't compile, and every tool in the enumerated tool set produces audit events when called.
+- Code that passes a string variable to `scan.Fixed` doesn't compile; a string constant does.
+- The required paths in section 1 hold: code that passes a plain string to a provider doesn't compile, and every tool in the enumerated tool set produces audit events in the in-memory recorder when called.
 - No tool exists that runs a command or opens a network connection: a test enumerates the tool set.
 - The scripted provider can't be enabled through organization policy.
 - A session can't switch repositories, and resuming after the session maximum age is refused.
@@ -201,7 +206,7 @@ Checks: scripted sessions that edit, delete and create files, then undo; the har
 
 Requirements: M17, M23 (provider and feature gating, local-listener verification, repository identity and class sent to the gateway), M14 (usage limits). Can run in parallel with milestones 6, 8 and 9.
 
-Delivers: adapters for the Claude API, Bedrock, OpenAI-compatible endpoints and the organization gateway, using `credstore` for keys and tokens and `netclient` for connections; approved-model and feature enforcement per class; listening-process check for local-only classes; usage limits per session and per day, counted from provider responses and kept in `localstore`; per-request metadata sent to the gateway. This milestone owns the metadata mechanism and the repository identity and class it carries; milestone 8 adds the log chain head to it.
+Delivers: adapters for the Claude API, Bedrock, OpenAI-compatible endpoints and the organization gateway, using `credstore` for keys and tokens and `netclient` for connections; approved-model and feature enforcement per class; listening-process check for local-only classes; usage limits per session and per day, counted from provider responses and kept in `localstore` (these counters are advisory, because a developer can delete local files to reset them; the gateway is the real enforcement); per-request metadata sent to the gateway. This milestone owns the metadata mechanism and the repository identity and class it carries; milestone 8 adds the log chain head to it.
 
 Checks:
 - Adapter contract tests against recorded responses, no live calls in `make check`.
@@ -209,6 +214,7 @@ Checks:
 - A loopback port held by `ssh` or an unidentified process is refused for a local-only class.
 - Requests stop with a clear message once the session or daily usage limit is reached.
 - Gateway requests carry the repository identity and class (recorded-request test).
+- Every AWS SDK client (Bedrock, and in milestone 8 S3 and KMS) and any other SDK client is built with `netclient`'s transport, never the SDK's default HTTP client, so the proxy, CA and HTTPS rules apply. A test inspects each constructed client.
 - A manual smoke test against a local model (Ollama), as described in S4.
 
 ### Milestone 8: Logging
@@ -216,13 +222,14 @@ Checks:
 Requirements: M10, M16. High effort. Can run in parallel with milestones 6, 7 and 9.
 
 Delivers:
-- `internal/audit` on top of `localstore`: three tiers, keyed hashes with the organization KMS key, read records (blob hash and line range), escrow option, condensed summaries logged as transcripts, hash chain, anchoring (the chain head added to each gateway request through milestone 7's metadata mechanism, or uploaded to S3 every minute without a gateway), batched S3 upload with retry.
-- `cmd/hermit-audit`, separate tooling the organization runs on its own infrastructure, not on developer machines: scheduled cross-checks of Hermit's logs against the gateway's request log, CloudTrail or provider usage records, checks that uploaded logs reach their anchors, alerts on gaps, and investigator search by keyed hash.
+- `internal/audit` on top of `localstore`, implementing the audit event interface from milestone 5: three tiers, keyed hashes with a per-session key wrapped by the organization's KMS key (usable offline, no KMS call per field), read records (blob hash and line range), escrow option, condensed summaries logged as transcripts, hash chain, anchoring (the chain head added to each gateway request through milestone 7's metadata mechanism, or uploaded to S3 every minute without a gateway), batched S3 upload with retry.
+- `cmd/hermit-audit`, separate tooling the organization runs on its own infrastructure, not on developer machines: scheduled cross-checks of Hermit's logs against the gateway's request log, CloudTrail or provider usage records, checks that uploaded logs reach their anchors, alerts on gaps, and investigator search by keyed hash, decrypting each session's hashing key.
 - AWS setup templates for the bucket, keys and roles in M16 (for P5), and for running the cross-checks.
 
 Checks:
 - Cross-checks flag model usage with no matching session, and a session whose uploaded log stops short of its anchor (tests against fixture records).
 - No plaintext path, query or argument appears in an audit event (property test over generated sessions).
+- Hashing works with no network; the session key is wrapped before upload, and the upload role can encrypt with the wrapping key but not decrypt (tested against the AWS templates).
 - Truncating the local log is detected against the anchor.
 - Upload tests against a local S3-compatible server; a separate manual test against a real AWS account, verifying Object Lock modes and crypto-shredding.
 
@@ -236,7 +243,7 @@ Checks: tests against recorded API responses; a test enumerates the client's end
 
 ### Milestone 10: Test results
 
-Requirements: M15, M7. Depends on milestone 9 for CI results.
+Requirements: M15, M7. Depends on milestone 6 for snapshots (freshness) and milestone 9 for CI results.
 
 Delivers: `internal/testresults`: JUnit XML parsing with size limits and no external entities, freshness against snapshots, detail levels per class, and summaries of CI test reports retrieved through `scm`.
 
@@ -256,7 +263,7 @@ Requirements: M18.
 
 Delivers: reproducible builds, signed and notarized macOS package, signed MSI, deb and rpm, SBOM and build provenance, FIPS build, MDM profile and ADMX templates, documented organization signing.
 
-Checks: two independent builds produce identical executables; packages install and uninstall cleanly on each OS, and uninstall removes everything (M10).
+Checks: two independent builds produce identical executables; packages install and uninstall cleanly on each OS, and uninstall removes everything (M10); developer packages contain `hermit` only, not `cmd/hermit-audit`, which ships separately for the organization's own infrastructure.
 
 ### Milestone 13: Evaluation, validation and documentation
 
@@ -268,18 +275,25 @@ Checks: the evaluation suite runs end to end against at least two providers; a r
 
 ## 4. Order and parallel work
 
-Milestones (not requirement IDs):
-
-```
-0 ─ 1 ─┬─ 2 ─┐
-       ├─ 3 ─┼─ 5 ─┬─ 6 ────────┐
-       └─ 4 ─┘     ├─ 7 ────────┤
-                   ├─ 8 ────────┼─ 11 ─ 12 ─ 13
-                   └─ 9 ─ 10 ───┘
-```
+| Milestone | Depends on | Can run alongside |
+|---|---|---|
+| 0 Repository and checks | — | — |
+| 1 Policy | 0 | — |
+| 2 Credentials, local storage, network client | 1 | 3, 4 |
+| 3 File access guard | 1 | 2, 4 |
+| 4 Scanning and rendering | 1 | 2, 3 |
+| 5 Agent loop | 2, 3, 4 | — |
+| 6 Working tree | 5 | 7, 8, 9 |
+| 7 Model providers and data classes | 5 | 6, 8, 9 |
+| 8 Logging | 5 | 6, 7, 9 |
+| 9 Source control | 5 | 6, 7, 8 |
+| 10 Test results | 6, 9 | 7, 8 |
+| 11 Terminal interface and setup check | 6, 7, 8, 10 | — |
+| 12 Packaging and distribution | 11 | — |
+| 13 Evaluation, validation and documentation | 12 | — |
 
 - **Critical path:** policy, then credentials and local storage, the file access guard, and scanning and rendering, then the agent loop. The loop is where every model-bound message passes, so nothing that talks to a model is built before `fsguard`, `scan`, `render` and `localstore` exist.
-- **Parallel tracks:** milestones 2, 3 and 4 touch separate packages and can run at the same time. So can milestones 6, 7, 8 and 9. Milestone 10 waits for 9, because it summarizes CI results retrieved through `scm`.
+- **Parallel tracks:** milestones 2, 3 and 4 touch separate packages and can run at the same time. So can milestones 6, 7, 8 and 9. Milestone 10 waits for 6 and 9: it checks freshness against snapshots and summarizes CI results retrieved through `scm`.
 - **First usable build:** after milestones 0–6, plus a minimal terminal interface and a single provider, Hermit can be used on its own repository with the scripted or a local provider. Dogfooding from that point surfaces usability problems early (M11).
 
 ## 5. Traceability
@@ -316,5 +330,5 @@ Prerequisites P1–P11 are organizational. Milestone 13's documentation covers t
    - **Ask git** (`git check-ignore --stdin -z`): always matches git's behavior, including global and per-repository exclude files, but runs a process, which `fsguard` is meant to avoid.
    - **Reimplement gitignore matching:** keeps `fsguard` self-contained, but can drift from git's behavior, and a mismatch could make an ignored file readable.
 
-   Recommendation: ask git, from a small separate package that gives `fsguard` the answers, so `fsguard` itself still runs no processes. Hermit already requires git (M18). If git is unavailable or returns an error, treat the file as ignored, so the failure refuses rather than allows. Test against a corpus of gitignore cases to confirm the answers match git.
+   Recommendation: ask git through `internal/gitcmd`, which gives `fsguard` the answers, so `fsguard` itself still runs no processes. Hermit already requires git (M18). If git is unavailable or returns an error, treat the file as ignored, so the failure refuses rather than allows. Test against a corpus of gitignore cases to confirm the answers match git.
 7. **Format of the AWS setup templates** (milestone 8, for P5): CloudFormation, CDK or Terraform. CloudFormation needs no extra tooling in an AWS-only organization; Terraform suits organizations that already manage AWS with it. Shipping one and documenting the resources well enough to translate may be enough.

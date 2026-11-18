@@ -172,7 +172,14 @@ Organization or repository configuration can allow named paths, such as test fix
 
 Organization policy (M14) can turn off audit details or transcripts, or turn off logging entirely. Content scanning (M19) runs on audit details and transcripts before they are written, but they can still hold personal data or a secret that scanning missed, which is why both can be erased.
 
-**Keyed hashes.** A plain hash of a short value, such as a file name or a patient's name, can be reversed by guessing. Audit events therefore use keyed hashes (HMAC) made with an organization-wide hashing key held in KMS. Authorized investigators can still search across all sessions ("which sessions touched `data/patients/x.csv`?"), and only people with access to the key can test guesses. The key rotates on a schedule, and destroying an old key makes that period's hashes impossible to link to anything while the events themselves stay. Under GDPR, keyed hashes are pseudonymized data, which is still personal data; key rotation is what makes them effectively erasable, and the organization's privacy office should confirm this approach.
+**Keyed hashes.** A plain hash of a short value, such as a file name or a patient's name, can be reversed by guessing. Audit events therefore use keyed hashes (HMAC), each session with its own key:
+- **Generated on the developer's machine** at the start of the session, so hashing needs no network call and works offline.
+- **Wrapped by the organization.** Before upload, the session key is encrypted with an organization KMS wrapping key and stored with the session's audit events. Developers' roles can encrypt with the wrapping key but not decrypt. Until upload, the session key stays in `localstore`.
+- **Who can test guesses.** A developer can test guesses only against the sessions they ran themselves, which contain only what they handled, and the upload role cannot read logs back. Nobody else can test guesses without decrypting the session key, which only investigators can do.
+- **Searching.** Investigators decrypt session keys to search ("which sessions touched `data/patients/x.csv`?"). This is slower across many sessions than a single shared key, but investigations are rare.
+- **Unlinking old hashes.** The wrapping key rotates on a schedule. Destroying an old wrapping key makes that period's session keys unrecoverable, so its hashes can no longer be linked to anything, while the events themselves stay.
+
+Under GDPR, keyed hashes are pseudonymized data, which is still personal data; destroying the wrapping key is what makes them effectively erasable, and the organization's privacy office should confirm this approach. A gateway-based alternative, hashing on the server with a key no developer can use, removes even the developer's ability to test guesses against their own sessions, at the cost of a server-side service.
 
 **Read records for breach scoping.** Breach-notification rules, such as HIPAA's, require deciding which individuals' data was exposed, not just which sessions. So for every read of a tracked file, the audit details record the git blob hash and line range. Git stores content by hash, so investigators can reconstruct exactly what was sent from the repository later. Content that can't be rebuilt that way (developer pastes, untracked files, test and CI output, MR comments) needs an organization choice:
 - **Worst-case scoping (default):** a documented decision that any incident involving these sources is assumed to include everything they could have contained.
@@ -220,7 +227,7 @@ The policy settings, their defaults and where each is defined. This is the only 
 | Model credential method | Gateway: SSO sign-in details for short-lived tokens, and optionally the device certificate to present. Claude API or OpenAI: developers enter a key issued to them. Bedrock: IAM Identity Center start URL, sign-in region, account ID and role name (M17) |
 | Source control host | URL and type, such as GitLab, GitHub or Bitbucket (M24) |
 | Source control credential method | An OAuth application ID, where the host supports device sign-in. Otherwise a personal access token with the narrowest scope that can read the repository and open MRs (M24) |
-| Log destination | Amazon S3 (bucket, region, upload role, the organization hashing key, a KMS key for audit events, and separate KMS keys and a session key store for audit details, escrow and transcripts), the model gateway's log, or local only, which is not a reliable audit trail (M10, M16) |
+| Log destination | Amazon S3 (bucket, region, upload role, the KMS wrapping key for session hashing keys, a KMS key for audit events, and separate KMS keys and a session key store for audit details, escrow and transcripts), the model gateway's log, or local only, which is not a reliable audit trail (M10, M16) |
 
 **Logging and retention**
 
@@ -230,7 +237,7 @@ The policy settings, their defaults and where each is defined. This is the only 
 | **Log retention: audit details** | **1 year** | **Review this too.** Plaintext paths, queries, arguments and read records, kept long enough to investigate incidents discovered late. Erasable (M16) |
 | **Log retention: transcripts** | **90 days**, if turned on | **Review this too.** Transcripts contain code and possibly data. Erasable (M16) |
 | Log content | Audit events and audit details | Transcripts are opt-in; audit details or all logging can be turned off (M10) |
-| Organization hashing key | Rotated yearly | KMS key for keyed hashes in audit events. Destroying an old key makes that period's hashes unlinkable (M10) |
+| Hashing key wrapping key | Rotated yearly | KMS key that encrypts each session's hashing key. Developers can encrypt with it, only investigators can decrypt. Destroying an old wrapping key makes that period's hashes unlinkable (M10) |
 | Breach scoping for content that can't be rebuilt | Worst-case scoping | Or escrow of what was sent from pastes, untracked files, test and CI output and MR comments. Escrow is recommended where breach-notification law applies (M10) |
 | Local file retention | A few days after confirmed upload; session files removed at session end | For local logs and session files on developer machines (M10) |
 | Session maximum age | Set by the organization | After this, session files are removed and a session cannot be resumed (M10) |
@@ -304,12 +311,12 @@ Developers run agent-written tests before or after reviewing them, as they would
 - **Write-only, short-lived credentials.** Developers sign in through IAM Identity Center. The role can only call `s3:PutObject` under that developer's own prefix. It has no read, list or delete permission, and there are no long-lived access keys. The harness holds the credentials, and the agent cannot use them because it has no shell.
 - **Tamper evidence.** Each event includes a hash of the previous one, so gaps and edits are detectable. The bucket uses versioning and S3 Object Lock.
 - **Lock modes differ by content.**
-  - **Audit events** use compliance mode, so no one, including administrators, can delete or overwrite them during their retention period (M14). They hold identifiers only as keyed hashes (M10), and rotating the hashing key is how old hashes stop being linkable.
+  - **Audit events** use compliance mode, so no one, including administrators, can delete or overwrite them during their retention period (M14). They hold identifiers only as keyed hashes (M10), and destroying an old wrapping key is how old hashes stop being linkable.
   - **Audit details, escrow and transcripts** use governance mode. It still stops developers, but named administrators with explicit permission can delete them to clean up a spill.
 - **Audit details, escrow and transcripts can be erased.** Each session's records in these tiers are encrypted with their own data key, and the keys are kept in separate storage that can be deleted. Deleting a session's key makes those records permanently unreadable, even while Object Lock keeps the encrypted objects (crypto-shredding). This is a common way to combine immutable logs with erasure requests and spill cleanup. Whether it meets a particular legal erasure requirement is a question for the organization's privacy office.
 - **Anchored chain head.** A hash chain cannot show that its end was cut off: a developer could delete the last part of the local log before it is uploaded. So the harness records the session ID, event number and current chain hash off the machine as it goes. With a gateway (M17), it sends them with every model request and the gateway records them. Without one, it uploads them to S3 as a small separate object about every minute. The uploaded log must reach at least the last anchored point, or the gap is reported.
 - **Cross-checks against server-side records.** Scheduled checks compare Hermit's sessions with records the developer cannot alter: the gateway's request log, or without a gateway the provider's own records (CloudTrail for Bedrock, which records that calls happened without their content, or usage per API key in the provider's console). Bedrock model invocation logs are not used, because they copy content (P11). Model usage with no matching Hermit session, and sessions whose logs stop short of their anchor, raise an alert.
-- **Encryption and access.** SSE-KMS with a dedicated key. The bucket policy rejects non-TLS requests and unencrypted uploads, and Block Public Access is on. Audit details, escrow and transcripts each go under a separate prefix with their own KMS key and tighter decryption access than audit events. The organization hashing key (M10) is a separate KMS key, usable only by investigators.
+- **Encryption and access.** SSE-KMS with a dedicated key. The bucket policy rejects non-TLS requests and unencrypted uploads, and Block Public Access is on. Audit details, escrow and transcripts each go under a separate prefix with their own KMS key and tighter decryption access than audit events. The wrapping key for session hashing keys (M10) is a separate KMS key: developers' roles can encrypt with it, and only investigators can decrypt.
 - **Querying.** Logs are partitioned by date for querying with Athena, which costs nothing until someone runs a query.
 - **Cost.** Storage cost is small. A rough estimate for 50 developers, a few sessions a day and a couple of megabytes per transcript is about 15 GB a year compressed, or under 100 GB over six years. Lifecycle rules can move older logs to a Glacier storage class, and Object Lock still applies there. The real decision is whether to keep transcripts at all, and for how long, which is why they are off by default and have their own shorter retention (M14).
 - **Optional upgrades.** Kinesis Data Firehose in front of S3 for near-real-time delivery or very large volumes, and CloudWatch Logs for alerting (for example, on repeated protected-path refusals).
@@ -541,7 +548,7 @@ To be agreed with leadership before a pilot:
 
 ### Runbook: restricted data was sent to the model
 
-1. **Find the affected sessions** in the audit log (M10, M16) by user, repository, time and scanning or refusal events. Investigators with access to the hashing key can search by path or term across all sessions.
+1. **Find the affected sessions** in the audit log (M10, M16) by user, repository, time and scanning or refusal events. Investigators can search by path or term across sessions by decrypting each session's hashing key (M10).
 2. **Determine which individuals' data was exposed.** Reconstruct what was sent from tracked files using the blob hashes and line ranges in the audit details (M10). For pastes, untracked files, test and CI output and MR comments, use escrow if it is turned on, or otherwise apply worst-case scoping. Breach-notification rules depend on this answer; under HIPAA, for example, it feeds the four-factor risk assessment, and notification is due within 60 days of discovery. Legal counsel owns the decision.
 3. **Rotate** any credential that may have been exposed. Assume exposure if in doubt.
 4. **Ask the provider to delete the data**, where its terms allow it (P4). Record the request and the response.
@@ -643,8 +650,8 @@ Illustrative only; the final format is settled during implementation. This examp
   "logging": {
     "tiers": { "audit_details": true, "transcripts": false },
     "retention": { "audit_events_years": 6, "audit_details_days": 365, "transcripts_days": 90 },
-    "hashing_key_arn": "arn:aws:kms:us-east-1:123456789012:key/<hmac-key-id>",
-    "hashing_key_rotation_days": 365,
+    "hashing_key_wrapping_key_arn": "arn:aws:kms:us-east-1:123456789012:key/<wrapping-key-id>",
+    "wrapping_key_rotation_days": 365,
     "breach_scoping": "worst_case",
     "local_retention_days_after_upload": 3,
     "destination": "s3",
