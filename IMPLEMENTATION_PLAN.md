@@ -1,6 +1,6 @@
 # Implementation Plan: Hermit
 
-Status: draft. The specification is [REQUIREMENTS.md](REQUIREMENTS.md); requirement IDs (M1–M24, S1–S7, P1–P12) refer to it. Milestones are numbered 0–14 and are never written with an "M", to keep them distinct from requirement IDs. Three pieces of work are named rather than numbered: the spike before milestone 1, the walking skeleton after milestone 5, and Bitbucket support after milestone 10.
+Status: draft. The specification is [REQUIREMENTS.md](REQUIREMENTS.md); requirement IDs (M1–M24, S1–S7, P1–P12) refer to it. Milestones are numbered 0–14 and are never written with an "M", to keep them distinct from requirement IDs. Four pieces of work are named rather than numbered: the spike before milestone 1, the walking skeleton after milestone 5, Azure and Google Cloud providers after milestone 7, and Bitbucket support after milestone 10.
 
 This plan assumes Hermit is built with an AI coding agent (Claude Code), following Anthropic's [best practices for Claude Code](https://code.claude.com/docs/en/best-practices). The practices that shape it:
 
@@ -41,7 +41,7 @@ One Go module that builds the `hermit` executable (M18). Packages are split so t
 | Rule | How it is enforced |
 |---|---|
 | Every repository read and write goes through `fsguard`, including test reports | A static check can see a file call but not which path it gets, so the CI check is by package: only `fsguard`, `localstore` and `policy` (the policy file, the CA certificate files it names, and managed-device markers) may use file-system APIs (the file functions in `os`, `io/fs` walking, and file calls in `syscall` and `golang.org/x/sys`). Of these, only `fsguard` is given repository paths, which review checks. `testresults` reads report files through `fsguard`, so M13 applies to them |
-| Every byte sent to the model passes through `scan` | Compiler: the provider interface accepts only `scan.Cleared`, a type with unexported fields that only `scan` can construct. Text the harness itself writes (system prompt, standing instructions) uses `scan.Fixed`, whose parameter has an unexported string type, so callers outside `scan` can pass only string constants, never variables. Tool definitions are structured data (names, descriptions, JSON schemas generated from Go types), so they reach the provider as a `tooldef.Set` from a small package `internal/tooldef`, which `provider` may import; CI allows only `tools` to call its constructor. CI: `provider` may not import `fsguard`, `tools`, `scm` or `testresults`, so it has no other source of content |
+| Every byte sent to the model passes through `scan` | Compiler: the provider interface accepts only `scan.Cleared`, a type with unexported fields that only `scan` can construct, and `provider.Turn`, the model's own earlier output, which only `provider` can construct, from responses it actually received. Earlier turns go back unchanged, because providers check that conversation history isn't edited (milestone 5). Text the harness itself writes (system prompt, standing instructions) uses `scan.Fixed`, whose parameter has an unexported string type, so callers outside `scan` can pass only string constants, never variables. Tool definitions are structured data (names, descriptions, JSON schemas generated from Go types), so they reach the provider as a `tooldef.Set` from a small package `internal/tooldef`, which `provider` may import; CI allows only `tools` to call its constructor. CI: `provider` may not import `fsguard`, `tools`, `scm` or `testresults`, so it has no other source of content |
 | Every byte displayed, and every MR text sent, passes through `render` | Compiler: `tui` accepts only `render.Safe`, and `scm` accepts MR text only as `render.ApprovedMRText`. CI: only `tui`'s approval step may call the constructor for `ApprovedMRText` (M20), because the compiler alone can't restrict which package calls an exported function |
 | Every tool call is logged | Tools run only through one wrapper in `loop` that records the call before and after. A test enumerates every tool and checks that calling it produces audit events |
 | Only `git` runs, and only through one package | CI check: only `internal/gitcmd` may start a process, whether through `os/exec`, `os.StartProcess`, `syscall.Exec`, `syscall.ForkExec` or their `golang.org/x/sys` equivalents. It runs a fixed list of git subcommands. The check is an analyzer run over every package linked into `hermit`, third-party ones included, so a dependency that starts programs fails it too. That rules out the AWS SDK's `config` package, whose default loading runs any `credential_process` in `~/.aws/config`: AWS clients get their credentials from Hermit's own IAM Identity Center sign-in. It also rules out credential store libraries that run `/usr/bin/security` on macOS (open decision 8). Sign-in flows show the URL for the developer to open, rather than starting a browser. Everything that needs git (policy reading the remote, the worktree, the git-ignored check, undo) goes through `gitcmd`. This is what makes "the agent runs no commands" (M2) checkable, and lets a test enumerate every git invocation. `gitcmd` also stops git from starting other programs: every call passes `--no-pager` and `-c core.fsmonitor=false`, any diff compares stored objects only and adds `--no-ext-diff --no-textconv`, and subcommands that would run clean or smudge filters on working-tree content are left off the list. That includes `git status` and any diff against the working tree, which run clean filters on changed files whatever `--no-textconv` says; the harness works out changes from its own snapshots instead, and computes blob hashes for read records in Go. Network subcommands such as `fetch`, `pull` and `ls-remote` are never on the list. A hostile test uses a repository whose configuration sets an fsmonitor program, clean and smudge filters, a textconv driver, an external diff tool and a pager, and checks that none of them runs |
@@ -60,7 +60,7 @@ Other dependency rules, also checked in CI from milestone 0:
 3. **Tests first for security rules.** For `policy`, `localstore`, `fsguard`, `scan` and `render`, the hostile cases from the requirements are written as failing tests before the implementation.
 4. **Run the checks.** The Stop hook (milestone 0) runs `make check` whenever the agent tries to finish with Go changes, so a milestone can't end with failing tests. Ask for the command output as evidence, not a summary. If the agent needs to stop and ask instead (below), it writes the question to `QUESTION.md`, which lets it stop.
 5. **Review against the spec.** The main session saves the milestone's full diff, including new files, against the commit where the milestone started: `scripts/review-diff.sh <start-commit>` writes `review/milestone.diff` (`review/` is gitignored). Plain `git diff` would leave out the new packages most milestones create, so the script stages everything into a temporary copy of git's index (`GIT_INDEX_FILE`) and diffs that, leaving the developer's own index untouched. It then asks the read-only `spec-reviewer` subagent to compare that file with the milestone's requirements: every requirement implemented, every listed case tested, gaps that affect correctness only, no style comments. The reviewer reads the diff from the file, so it needs no shell.
-6. **A developer reviews and commits.** Nothing merges without a person reading the diff.
+6. **A developer reviews and commits.** Nothing merges without a person reading the diff. From milestone 0 on, every change reaches `main` through a pull request with the CI checks required to pass.
 7. **Clear between milestones.** Unrelated history makes later sessions slower and more expensive.
 
 **Effort.** Use high effort for milestones 1, 2, 3, 4, 5, 7, 8 and 9, where a missed edge case is a security bug: fail-closed policy loading, local storage and credentials, the file access guard, scanning and rendering, the agent loop that wires every compile-time guarantee together, which provider sees which repository's data, logging, and the source control limits. Default effort is enough elsewhere.
@@ -79,13 +79,47 @@ Delivers:
 - Go module pinned to Go 1.25 or later, in `go.mod` and in CI. `fsguard` needs `os.Root.Rename` for atomic writes inside the root, and the hostile tests need `os.Root.Link` to create hard links; both arrived in Go 1.25. (Go's FIPS mode, mentioned in M18, has been available since 1.24, so 1.25 covers both.)
 - Package layout from section 1, `Makefile` with `make check` (format check, `go vet`, `staticcheck`, unit tests, the dependency-rule checks, including the process check over every linked package) and `make fuzz`.
 - `scripts/review-diff.sh` for the review step in section 2.
-- CI running `make check` on macOS, Windows and Linux (S4 requires all three).
+- The approved list of third-party code (below), enforced by a CI check on `go.mod`.
+- CI on GitHub Actions running `make check` on GitHub's hosted macOS, Windows and Linux runners (S4 requires all three). The repository becomes public at this point, since hosted runners are free for public repositories, and organizations auditing "build from source" (M18) need to see the source. Before it does, check the history and documents for anything that shouldn't be published.
+- CI and repository hardening, since this is a security product:
+  - third-party actions pinned to commit hashes, not tags;
+  - the automatic `GITHUB_TOKEN` limited to the permissions each workflow needs;
+  - `main` protected, with the `make check` jobs required and pull request review required;
+  - release tags signed;
+  - `SECURITY.md` and GitHub's private vulnerability reporting turned on before the repository goes public.
 - Development guardrails for building Hermit with Claude Code:
   - a short `CLAUDE.md` (draft below);
   - `.claude/settings.json` with the `Stop` hook below; `ask` for edits to `REQUIREMENTS.md`; `deny` for reading credential files;
   - `.claude/agents/spec-reviewer.md`: tools limited to `Read, Grep, Glob`, instructed to compare the diff file it is given against named requirements and skip style;
   - `.gitignore` entries for `review/` and `QUESTION.md`;
   - `.claude/rules/security-core.md` with `paths:` set to the security packages, holding the conventions for that code (below).
+
+**Approved third-party code.** The standard library comes first. Anything else is on this list, vendored so that every change to it appears in the review diff, and checked by `govulncheck` in `make check`. Development-only tools, such as `staticcheck`, live in a separate module, so they are never linked into `hermit`. Adding to the list goes through `QUESTION.md`.
+
+| Need | Approved | Conditions |
+|---|---|---|
+| System calls: credential stores, Windows APIs, socket tables | `golang.org/x/sys` | |
+| Unicode normalization for path matching (M21) | `golang.org/x/text` | |
+| Raw terminal mode | `golang.org/x/term` | |
+| Bedrock, S3, KMS, IAM Identity Center sign-in | AWS SDK for Go v2: the core packages and only the service clients needed (`bedrockruntime`, `s3`, `kms`, `sso`, `ssooidc`) | Never `config` or `credentials/processcreds`, which run `credential_process` programs. Credentials come from Hermit's own sign-in. Every client uses `netclient`'s HTTP client |
+| Claude API, and a gateway that speaks the Anthropic API | `github.com/anthropics/anthropic-sdk-go` | See "Model provider SDKs" below |
+| Reading CI configuration (M8) | One maintained YAML parser | go-yaml moved to the YAML organization in 2025; check its current module path when adding it |
+| Terminal interface | Decided in open decision 2, at the walking skeleton | |
+| macOS Keychain | Decided in open decision 8 | |
+
+Not used:
+- `openai-go`: OpenAI-compatible endpoints use plain HTTP (see below and open decision 11).
+- The Anthropic SDK's own Bedrock client: it serves Claude only, where Bedrock's Converse API covers every vendor (M17), and it may load the AWS default configuration.
+- A JSON Schema library: the policy is validated with Go types, decoding that rejects unknown fields, and explicit checks.
+- Google's default credential code and Microsoft's authentication library: Hermit implements its sign-in flows itself over `netclient` (Azure and Google Cloud providers).
+
+**Model provider SDKs.** An SDK earns its place where the API changes quickly in ways that affect correctness. The Messages API has recently changed how thinking is configured, required reasoning blocks to come back unchanged, rejected forced tool choice on current models, and added a refusal stop reason; the Anthropic SDK tracks these. But SDKs also read configuration from the environment and retry on their own, so every SDK client Hermit builds:
+- is given the endpoint and credential explicitly, from the policy and `credstore`. A test shows that environment variables (`ANTHROPIC_*`, `OPENAI_*`, `AWS_*`) and saved login profiles, such as those under `~/.config/anthropic/`, change neither, so a source added in a later SDK version is caught;
+- uses `netclient`'s HTTP client, so the proxy, CA certificate and HTTPS rules apply;
+- has its own retries turned off. Hermit retries in its loop, so that each attempt is preceded by the policy recheck (M18) and recorded in the log;
+- is pinned, and upgraded deliberately, with the vendored diff reviewed like any other change.
+
+The guarantee that every model-bound message passed through `scan` is unaffected, because it is enforced at Hermit's provider interface, before any SDK sees the message.
 
 **The Stop hook** (`scripts/stop-check.sh`) blocks the agent from finishing while `make check` fails, with two exceptions:
 - **No Go changes:** if no `.go` files, `go.mod`, `go.sum`, test fixtures or the `Makefile` changed in the working tree, it allows the stop, so documentation-only sessions aren't held up.
@@ -95,7 +129,7 @@ A `SessionStart` hook, limited to the `startup|resume` matcher so it doesn't fir
 
 The Stop hook does not use `stop_hook_active` as an exception, because that would let the agent stop after a single retry with tests still failing. An endless loop is prevented by Claude Code itself: per the [best-practices page](https://code.claude.com/docs/en/best-practices#enforce-the-check-with-a-stop-hook), after eight blocked stops in a row with no tool call between them, it overrides the next block and ends the turn (`CLAUDE_CODE_STOP_HOOK_BLOCK_CAP` changes the number). Using the question file to get past failing tests is visible to the developer, who sees the question.
 
-Checks: `make check` passes on all three operating systems in CI; the Stop hook blocks a deliberately failing test, allows a documentation-only change, and allows a stop when `QUESTION.md` exists; a `QUESTION.md` left from an earlier session is renamed at session start and no longer lets a failing session stop; the review diff includes a newly created package and leaves git's index unchanged; each dependency rule fails on a deliberate violation, including a test dependency that starts a process.
+Checks: `make check` passes on all three operating systems in CI; a direct push to `main`, or a pull request with a failing check, is rejected; a workflow that refers to an action by tag rather than commit hash fails a CI lint; the Stop hook blocks a deliberately failing test, allows a documentation-only change, and allows a stop when `QUESTION.md` exists; a `QUESTION.md` left from an earlier session is renamed at session start and no longer lets a failing session stop; the review diff includes a newly created package and leaves git's index unchanged; each dependency rule fails on a deliberate violation, including a test dependency that starts a process.
 
 Draft `CLAUDE.md`:
 
@@ -129,7 +163,7 @@ paths:
 - Fail closed: any error or unknown case refuses, never allows.
 - Every rule needs a test for the allowed case and the refused case.
 - Name hostile tests after the requirement and case, for example TestM21_SymlinkToSSH.
-- No dependencies outside the standard library without asking.
+- No dependencies beyond the approved list in IMPLEMENTATION_PLAN.md, milestone 0, without asking.
 ```
 
 ### Spike: is the constrained agent useful?
@@ -138,12 +172,41 @@ Requirements: M11, and the constraints that most limit usefulness: M1, M2, M7, M
 
 Goal 2 makes usefulness a security requirement, and nothing else in the plan tests it before a real model is wired in at milestone 7. The spike is a throwaway prototype, kept out of the main branch, that answers one question early: is an agent with no shell, no test runs, no history and no access to manifests or ignored files still worth using?
 
-Delivers: a minimal loop against the Claude API with the version 1 tool set (read, search, list, edit, read test results), with the protected and unreadable paths approximated. Two or three developers use it for a few days on 5–10 real tasks in repositories with no sensitive data, and a short findings note records:
-- how many tasks finished, and how many developer test runs each took;
-- how often protected manifests, ignored files (including generated code) or missing history got in the way;
-- how often edits failed to apply, and which edit format worked best (open decision 9).
+Delivers: a minimal loop against the Claude API with the version 1 tool set (read, search, list, edit, read test results), with the protected and unreadable paths approximated, and with each candidate edit format from open decision 9 available. The tasks, measures and decision rules below are fixed before the spike runs, so the results can't be read to fit a conclusion afterwards. The findings go in `docs/spike-findings.md`.
 
-Checks: the findings note exists and has been read by whoever owns REQUIREMENTS.md. Findings that would change the requirements go to `QUESTION.md`, as for any milestone. None of the prototype's code is reused.
+**Repositories.** Three public open-source repositories, one each for Java (Maven or Gradle), Python (pytest) and TypeScript (Jest). Each has 10,000–100,000 lines, passing tests that write JUnit XML reports, and nothing sensitive.
+
+**Tasks.** Ten tasks, spread across the three repositories. Tasks 7, 9 and 10 are probes, designed to hit Hermit's constraints:
+1. Fix a failing test caused by a bug seeded for the purpose.
+2. Implement a small feature touching 3–5 files, with tests.
+3. Add tests for a module that has none.
+4. Rename or refactor something used across the codebase.
+5. Revise a prepared branch in response to review comments, pasted in, since the spike has no host integration.
+6. A task that needs a new dependency. Expected outcome: a description for the developer, not an edit.
+7. *Probe:* a task whose natural fix touches a protected file, such as a test runner setting in `pyproject.toml` or a script in `package.json`.
+8. Orientation: explain how a subsystem works, for a developer new to it.
+9. *Probe:* a task that needs generated or git-ignored code to understand, such as generated API client sources.
+10. *Probe:* a task where history would help, such as "why was this check added, and is it still needed?"
+
+**Participants.** Two or three developers, at least one of whom didn't write the requirements.
+
+**Measures, per task:**
+- completed: the result is a diff the developer would commit with at most minor edits;
+- how many times the developer ran the tests;
+- the number of model turns, and the time taken;
+- edits that failed to apply, by edit format;
+- refusals, by kind;
+- whether the developer can explain the diff;
+- the developer's rating, 1–5, of whether they'd use this instead of their usual tool for the task.
+
+**Decision rules:**
+- **Proceed as specified** if at least 5 of the 7 ordinary tasks (1–6 and 8) complete, and no other rule below triggers. With exactly 4, the owner of REQUIREMENTS.md decides, and the findings record why.
+- **Stop and revisit the constraints before milestone 1** if fewer than 4 of the ordinary tasks complete. The candidates to revisit are sandboxed agent-run tests and read-only history under M13's rules. The question goes to `QUESTION.md` for whoever owns REQUIREMENTS.md.
+- **Raise agent-run tests as a requirements question** if the median number of developer test runs on task 1 exceeds 4.
+- **Revisit the M8 and M13 defaults** if protected files, ignored files or missing history block any of tasks 1–6 and 8. For the probes (7, 9 and 10), record whether the agent's alternative (a suggestion for the developer, or asking for a paste) was acceptable to the developer. If it wasn't for two or more of them, revisit the defaults too.
+- **Choose the edit format** with the lowest failure rate (open decision 9). If every format fails more than 10% of the time, the edit tool needs more design work before milestone 5.
+
+Checks: `docs/spike-findings.md` records every measure for every task, applies the decision rules as written, and has been read by whoever owns REQUIREMENTS.md. Findings that would change the requirements go to `QUESTION.md`, as for any milestone. None of the prototype's code is reused. The tasks become the first tasks of the evaluation suite (milestone 13).
 
 ### Milestone 1: Policy
 
@@ -204,7 +267,11 @@ Checks:
 
 Requirements: M1, M2, M9, M3 (stale-edit detection, edits to altered content), M10.1 (through the audit event interface), M10.14 (resume rules, condensed summaries as transcripts), M10.16 (one repository per session), M19 and M20 (scanning and checks on writes), S4, S5 (tool-call parser), S7. Depends on milestones 2, 3 and 4. High effort. This is the largest milestone, so run it as two sessions: first the tools and their wiring to `fsguard` and `scan`, then the loop, condensing and resume.
 
-Delivers: the tool design: how an edit names what it changes, how edits apply to the real file when the model's view was altered (M3), and the shape and result sizes of search, listing and reads. It starts from the spike's findings and open decision 9, and is measured with the first evaluation tasks (milestone 13). Then `internal/tools` (the fixed tool set, no shell or network tools; read tracking and stale-edit refusal using `fsguard`'s conditional write; edits that overlap redacted or removed text refused; scanning and hidden-character checks on what each write adds), `internal/loop` (with every model-bound message passing through `scan` and every displayed message through `render`, including the model's own earlier turns and condensed summaries, which are scanned again before being resent rather than given a way around `scan`; one repository per session; conversation state and condensed summaries kept in `localstore` as local transcripts; resume only within the session maximum age), the provider interface, including a hook for per-request metadata (milestones 7 and 8), the audit event interface with an in-memory recorder for tests (milestone 8 implements the real one), `scan.Fixed` for harness-written text, `internal/tooldef` for tool definitions, and the scripted provider. Standing instructions (S7).
+Delivers: the tool design: how an edit names what it changes, how edits apply to the real file when the model's view was altered (M3), and the shape and result sizes of search, listing and reads. It starts from the spike's findings and open decision 9, and is measured with the first evaluation tasks (milestone 13). Then `internal/tools` (the fixed tool set, no shell or network tools; read tracking and stale-edit refusal using `fsguard`'s conditional write; edits that overlap redacted or removed text refused; scanning and hidden-character checks on what each write adds), `internal/loop` (with every new model-bound message passing through `scan` and every displayed message through `render`; one repository per session; conversation state and condensed summaries kept in `localstore` as local transcripts; resume only within the session maximum age), the provider interface, including a hook for per-request metadata (milestones 7 and 8), the audit event interface with an in-memory recorder for tests (milestone 8 implements the real one), `scan.Fixed` for harness-written text, `internal/tooldef` for tool definitions, and the scripted provider. Standing instructions (S7).
+
+**Earlier turns and long conversations.** Current models return reasoning ("thinking") blocks that must be sent back exactly as received, and providers refuse or quietly drop them if earlier turns are edited. So the history the loop sends is append-only:
+- **The model's earlier turns** travel as `provider.Turn`, an opaque type that only `provider` can create, from a response it actually received. They are resent unchanged and never rescanned or redacted. Scanning them again would protect nothing, because the provider wrote them, and redacting them would edit history. Like all model output, they were shown through `render` when they arrived (M20).
+- **Condensing a long conversation** (M10.14) never edits earlier turns in place. It either uses the provider's own compaction, where the policy approves it as a provider feature (M17), or starts a new conversation from a summary. The summary is model-written, so it enters the new conversation as new content through `scan`.
 
 Checks:
 - Scripted hostile sessions from S4 (write `.git/hooks/pre-commit`, read `.env`, overwrite a newer developer edit, malformed tool calls) are all refused, with the refusal recorded.
@@ -213,6 +280,7 @@ Checks:
 - Editing a notebook cell clears that cell's outputs and keeps the other cells' outputs.
 - A Markdown write that adds an image from a domain that isn't allowed is refused; a write that adds bidirectional or tag characters to code is refused.
 - Code that passes a string variable to `scan.Fixed` doesn't compile; a string constant does.
+- Code outside `provider` can't construct a `provider.Turn`; a resent turn, thinking blocks included, is byte-for-byte what the provider returned; condensing a conversation never changes an earlier turn.
 - The required paths in section 1 hold: code that passes a plain string to a provider doesn't compile, a `tooldef.Set` built outside `tools` fails the CI check, and every tool in the enumerated tool set produces audit events in the in-memory recorder when called.
 - No tool exists that runs a command or opens a network connection: a test enumerates the tool set.
 - The scripted provider can't be enabled through organization policy.
@@ -223,7 +291,7 @@ Checks:
 
 Requirements: M11, M12 (minimal), M17 (the Claude API adapter only). Depends on milestone 5. Can run alongside milestones 6–9.
 
-Delivers: the smallest Hermit a developer can use: the Claude API adapter, using `credstore` and `netclient`, and a minimal terminal interface on the alternate screen that shows only `render.Safe` text. The team uses it on Hermit's own repository and on non-sensitive repositories, with the first evaluation tasks run against it. Milestones 7 and 11 build on this adapter and interface rather than starting again.
+Delivers: the smallest Hermit a developer can use: the Claude API adapter, built on `anthropic-sdk-go` under the conditions in milestone 0 and using `credstore` and `netclient`, and a minimal terminal interface on the alternate screen that shows only `render.Safe` text. The team uses it on Hermit's own repository and on non-sensitive repositories, with the first evaluation tasks run against it. Milestones 7 and 11 build on this adapter and interface rather than starting again.
 
 Checks: a developer completes a small real task from plan to reviewed diff; the evaluation tasks written so far run against it end to end.
 
@@ -243,16 +311,46 @@ Checks: scripted sessions that edit, delete and create files, then undo; undo of
 
 Requirements: M17, M23 (provider and feature gating, local-listener verification, repository identity and class sent to the gateway), M14.6 (usage limits). High effort. Can run in parallel with milestones 6, 8 and 9.
 
-Delivers: adapters for Bedrock, OpenAI-compatible endpoints and the organization gateway, alongside the walking skeleton's Claude API adapter, using `credstore` for keys and tokens and `netclient` for connections; approved-model and feature enforcement per class; listening-process check for local-only classes, made on the connection the harness opened and identifying the program by executable path and signature; usage limits per session and per day, counted from provider responses and kept in `localstore` (these counters are advisory, because a developer can delete local files to reset them; the gateway is the real enforcement); per-request metadata sent to the gateway. This milestone owns the metadata mechanism and the repository identity and class it carries; milestone 8 adds the log chain head to it.
+Delivers: adapters for Bedrock (the AWS SDK's `bedrockruntime` client and the Converse API), OpenAI-compatible endpoints (Chat Completions over plain HTTP, with a tolerant parser for the tool-call quirks of local servers, fuzzed under S5) and the organization gateway (whichever of the two API styles it speaks), alongside the walking skeleton's Claude API adapter, using `credstore` for keys and tokens and `netclient` for connections; approved-model and feature enforcement per class; listening-process check for local-only classes, made on the connection the harness opened and identifying the program by executable path and signature; usage limits per session and per day, counted from provider responses and kept in `localstore` (these counters are advisory, because a developer can delete local files to reset them; the gateway is the real enforcement); per-request metadata sent to the gateway. This milestone owns the metadata mechanism and the repository identity and class it carries; milestone 8 adds the log chain head to it.
 
 Checks:
 - Adapter contract tests against recorded responses, no live calls in `make check`.
+- For every adapter, setting `ANTHROPIC_*`, `OPENAI_*` or `AWS_*` environment variables, or creating a saved login profile, changes neither the endpoint nor the credential used.
+- SDK retries are off: a failed request is retried by Hermit's loop, and each attempt is preceded by the policy recheck and logged.
+- Recorded responses from vLLM, Ollama and LM Studio, including their differing tool-call formats, parse correctly or fail cleanly, never as a half-parsed tool call.
 - An unapproved model, cross-region profile or feature is refused before any request.
 - A loopback port held by `ssh` or an unidentified process is refused for a local-only class (on macOS, subject to open decision 5). So is a process named `ollama` running from an unapproved path, and a model ID not on the class's list, such as an Ollama cloud model.
 - Requests stop with a clear message once the session or daily usage limit is reached.
 - Gateway requests carry the repository identity and class (recorded-request test).
 - Every AWS SDK client (Bedrock, and in milestone 8 S3 and KMS) and any other SDK client is built with `netclient`'s transport, never the SDK's default HTTP client, so the proxy, CA and HTTPS rules apply. A test inspects each constructed client.
 - A manual smoke test against a local model (Ollama), as described in S4.
+
+### Azure and Google Cloud providers
+
+Requirements: M17 (Claude on Vertex AI, Claude on Microsoft Foundry, Azure OpenAI; data residency), M14.4 (endpoint and credential settings), M23 (provider gating per class), P11 (content logging off). Depends on milestone 7. Can run alongside milestones 8–13. High effort, as for milestone 7.
+
+Many regulated organizations already have their model agreements through Google Cloud or Microsoft, so these providers matter for adoption. But each brings its own sign-in and residency rules, so they are a separate piece of work. They aren't on the critical path.
+
+Delivers:
+- **Claude on Vertex AI.**
+  - **Adapter:** the Claude adapter, pointed at the policy's project and region.
+  - **Sign-in:** a token from Hermit's own Google Cloud sign-in (open decision 12), never Application Default Credentials. Those read the developer's `gcloud` configuration and can run external programs, which the process rule forbids.
+  - **SDK:** the Anthropic SDK's Vertex helper is used only if it can take Hermit's token without linking Google's default credential code. The process check over linked packages shows whether it does.
+- **Claude on Microsoft Foundry.**
+  - **Adapter:** the Claude adapter, pointed at the policy's Foundry endpoint. The Go SDK has no Foundry client, so the endpoint and authentication are set explicitly, after confirming the request format against Microsoft's documentation.
+  - **Sign-in:** Entra ID device sign-in, implemented over `netclient` without Microsoft's authentication library. Resource API keys are accepted only where the policy allows them, and `hermit doctor` warns that they don't attribute usage to a developer.
+- **Azure OpenAI.** The OpenAI-compatible adapter with Azure's endpoint format and Entra ID sign-in.
+- **Residency.** The policy states the region or deployment type it approves:
+  - Vertex AI's `global` and multi-region endpoints are refused unless approved;
+  - Azure global and data zone deployments are refused unless approved;
+  - on Foundry, each approved Claude deployment is listed, because some run on Anthropic's infrastructure rather than Azure's.
+- **`hermit doctor`** reports whether Vertex AI request-response logging is on, where the signed-in identity can read the setting (P11), as it does for Bedrock invocation logging.
+
+Checks:
+- adapter contract tests against recorded responses for all three;
+- an unapproved region, global endpoint or deployment is refused before any request;
+- Google's default credential code is not linked into `hermit`, and setting `GOOGLE_APPLICATION_CREDENTIALS`, `AZURE_*` or `OPENAI_*` variables changes neither the endpoint nor the credential;
+- Entra ID device sign-in works against a test tenant (manual), and tokens are refreshed and kept only in `credstore`.
 
 ### Milestone 8: Logging
 
@@ -275,9 +373,13 @@ Checks:
 
 ### Milestone 9: Source control
 
-Requirements: M24, S2, M20 (MR text approval and traceability), M23 (checking the repository's claimed identity with the host). GitLab first, then GitHub; Bitbucket is separate work after milestone 10. High effort. Can run in parallel with milestones 6, 7 and 8.
+Requirements: M24, S2, M20 (MR text approval and traceability), M23 (checking the repository's claimed identity with the host). GitHub first, then GitLab (open decision 3); Bitbucket is separate work after milestone 10. High effort. Can run in parallel with milestones 6, 7 and 8.
 
-Delivers: `internal/scm` with the fixed call list, current-project check, the commit check for repository identity (M23), branch rules, diff filtering by read rules, host content passed through `scan` and `render`, exact-text approval with session ID and phases, and retrieval of CI test reports.
+Delivers: `internal/scm` with the fixed call list, current-project check, the commit check for repository identity (M23), branch rules, diff filtering by read rules, host content passed through `scan` and `render`, exact-text approval with session ID and phases, and retrieval of CI test reports. The hosts differ here (M24, "CI detail depends on the host"):
+- **GitHub** has no test report API of its own. Test results come from check runs (the summaries and annotations that test-reporting actions write), or from JUnit XML uploaded as a workflow artifact. Artifacts are downloaded as archives and parsed by the harness with milestone 10's size limits; they are never handed to the agent as files.
+- **GitLab** returns a pipeline's parsed test report through its API.
+
+Once the GitHub adapter works, the team can use Hermit's MR features on Hermit's own repository. The GitLab adapter follows straight after, because the first pilot organization uses GitLab.
 
 Checks: tests against recorded API responses; a test enumerates the client's endpoints and fails if one outside the fixed list appears; MR diffs touching unreadable files are filtered; MR text can be sent only as `render.ApprovedMRText`; a repository whose remote points at a project that shares no commit with it gets the most restrictive class.
 
@@ -367,6 +469,7 @@ Checks: a reviewer who did not build Hermit can install and configure it from th
 | Walking skeleton | 5 | 6, 7, 8, 9 |
 | 6 Working tree | 5 | Skeleton, 7, 8, 9 |
 | 7 Model providers and data classes | 5, skeleton | 6, 8, 9 |
+| Azure and Google Cloud providers | 7 | 8–13 |
 | 8 Logging | 5 | Skeleton, 6, 7, 9 |
 | 9 Source control | 5 | Skeleton, 6, 7, 8 |
 | 10 Test results | 6, 9 | 7, 8 |
@@ -388,7 +491,7 @@ Checks: a reviewer who did not build Hermit can install and configure it from th
 | M2 No shell, network, credentials | 0 (process check), 2, 5 | M14 Organization policy | 1, 2, 7, 11 |
 | M3 Shared working tree | 3, 5, 6 | M15 Test results | 10 |
 | M4 Plan and phases | 6 | M16 Central log storage | 8 |
-| M5 Developer commits | 6 | M17 Model providers | 2, skeleton, 7, 13 |
+| M5 Developer commits | 6 | M17 Model providers | 2, skeleton, 7, Azure and Google Cloud, 13 |
 | M6 Reviewable writes | 3, 5 | M18 Distribution | 1, 2, 12 |
 | M7 Tests | 10 | M19 Content scanning | 4, 5 |
 | M8 Protected paths | 3, 6 | M20 Safe rendering | 4, 5, 9, 11 |
@@ -424,9 +527,9 @@ Prerequisites P1–P12 are organizational. Milestone 14's documentation covers t
 
 ## 6. Open decisions
 
-1. **Where the project is hosted,** which decides whether CI is GitHub Actions or GitLab CI.
+1. **Where the project is hosted. Decided:** GitHub, with CI on GitHub Actions. Hosted runners cover all three operating systems, including macOS, and the Windows runners allow the hostile tests' symbolic links and 8.3 short names. Build provenance comes from GitHub's artifact attestations, and security reports from private vulnerability reporting. The repository becomes public at milestone 0, when CI needs hosted runners.
 2. **Terminal interface library:** for example Bubble Tea, or a smaller library with less to review.
-3. **Which source control host comes first** for milestone 9 (assumed GitLab).
+3. **Which source control host comes first** for milestone 9. **Decided:** GitHub, so the team can use Hermit's MR features on Hermit's own repository, then GitLab straight after, for the first pilot organization. The first source control adapter is otherwise chosen by the pilot's host, not by where Hermit is hosted.
 4. **Which provider comes first** for the first usable build (assumed the Claude API).
 5. **Listening-process checks on macOS and Windows** (milestone 7). Linux exposes socket owners through `/proc`, and Windows through `GetExtendedTcpTable`, which Go can call without cgo. macOS has no simple Go API; the usual libraries run `lsof`, which would break the rule that only `gitcmd` runs a process, and cgo would complicate reproducible builds. The options are native system calls without cgo (Go can call libSystem functions such as `proc_pidinfo` the way its runtime does, at the cost of some low-level code), or a second, narrowly listed exception to the process rule (`lsof` with fixed arguments). Recommendation: try native calls first, and if they prove impractical, ship local-only classes on Linux and Windows first rather than weaken the rule.
 6. **How `fsguard` decides whether a file is git-ignored.** This matters because ignored files are unreadable by default (M13). The options:
@@ -438,3 +541,17 @@ Prerequisites P1–P12 are organizational. Milestone 14's documentation covers t
 8. **The macOS Keychain without cgo or running a program** (milestone 2). The common Go libraries either run `/usr/bin/security`, which breaks the process rule, or need cgo, which complicates reproducible builds. This is the same problem as open decision 5, and it is on the critical path. Windows Credential Manager and the Linux kernel keyring are reachable through system calls, and libsecret through D-Bus, without either. The options are the same as in decision 5: call Security.framework through libSystem-style trampolines without cgo, or accept cgo for the macOS build only and confirm the build stays reproducible. Recommendation: decide at the start of milestone 2, together with decision 5, since both need the same low-level calling code.
 9. **The edit tool's format** (milestone 5). Options include replacing an exact, unique piece of existing text, applying a unified diff, or rewriting a whole file. The choice decides how often edits fail to apply, and how edits map onto text the model saw altered (M3). Recommendation: exact-text replacement, which current models use reliably, and which maps directly to the M3 rule: the text being replaced must appear in the model's view, and must not overlap anything redacted or removed. Confirm with the spike's findings.
 10. **How developers sign in to Bitbucket Cloud** (Bitbucket support). Bitbucket Cloud documents no device sign-in. Its OAuth authorization code flow needs a browser that can reach a callback on the developer's machine, which fails on headless and remote development machines. It may also need a client secret, which can't go in the policy (M14.2). The alternative is a scoped API token that each developer creates and enters. Recommendation: API tokens, with `hermit doctor` checking their scopes. Revisit OAuth if Atlassian adds device sign-in, or confirms a flow without a client secret.
+11. **OpenAI's own API: Chat Completions or the Responses API** (milestone 7). The OpenAI-compatible adapter speaks Chat Completions, which local servers and most gateways implement, so it also works with OpenAI's own API. But OpenAI recommends its newer Responses API for reasoning models. With Chat Completions, a reasoning model's reasoning isn't carried between turns, which can weaken multi-step tool use, and some newer OpenAI models are offered only through the Responses API. A Responses adapter has its own data-handling rules:
+    - responses are stored by OpenAI by default, so the adapter must send `store: false`;
+    - it must not use server-side conversation state (`previous_response_id`, the Conversations API);
+    - it must pass reasoning back as encrypted reasoning items, the same append-only history as milestone 5;
+    - storage is a provider feature that stays off unless the policy approves it (M17), and is confirmed against the organization's terms (P4).
+
+    If a Responses adapter is built, it uses `openai-go` under the same conditions as the Anthropic SDK (milestone 0), for the same reason: that API is changing quickly. Recommendation: ship Chat Completions only. Add the Responses adapter if the evaluation suite (milestone 13) shows OpenAI models doing materially better with it, or if an organization needs a model that is offered only through it.
+12. **How developers sign in to Google Cloud for Vertex AI** (Azure and Google Cloud providers). Hermit can't use Application Default Credentials (M17), so it needs its own sign-in. The options:
+    - **Google's OAuth flow for desktop apps**, with a loopback redirect and PKCE. This works where a browser can reach the developer's machine, but not on headless or remote development machines. Google treats a desktop app's client secret as not confidential, so it can sit in the policy without breaking M14.2. Confirm that before relying on it.
+    - **Google's device flow.** As far as the planning research found, it allows only a short list of scopes that doesn't include Google Cloud access. Confirm against Google's current documentation.
+    - **Workforce Identity Federation** with the organization's own identity provider. This suits organizations that already use it, but means more sign-in code in Hermit.
+    - **A gateway** (M17), which holds the Google Cloud credentials itself, so developers sign in to the gateway instead.
+
+    Recommendation: the desktop flow on machines with a browser, and a gateway where developers work headless or remotely. Revisit if Google's device flow comes to allow Google Cloud access.
