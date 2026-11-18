@@ -270,6 +270,7 @@ Reading by file name is coarse: sensitive content also turns up in test fixtures
 | Provider endpoint | Bedrock region (including GovCloud); Google Cloud project and Vertex AI region; Microsoft Foundry or Azure OpenAI resource endpoint and deployment names; or the base URL of an OpenAI-compatible, regional, local or gateway endpoint (M17) |
 | Model credential method | Gateway: SSO sign-in details for short-lived tokens, and optionally the device certificate to present. Claude API or OpenAI: developers enter a key issued to them. Bedrock: IAM Identity Center start URL, sign-in region, account ID and role name. Vertex AI: the Google Cloud sign-in method (M17). Microsoft Foundry or Azure OpenAI: the Microsoft Entra ID tenant and application ID for device sign-in (M17) |
 | Source control host | URL and type, such as GitLab, GitHub or Bitbucket (M24) |
+| Schema version | The version of the policy format the policy is written for (M14.10) |
 | Source control credential method | An OAuth application ID, where the host supports device sign-in. Otherwise a personal access token with the narrowest scope that can read the repository and open MRs (M24) |
 | Log destination | Amazon S3 (bucket, region, upload role, a KMS key for audit events, a separate KMS key for each other tier that is on (audit details, escrow, transcripts), and a session key store), the model gateway's log, or local only, which is not a reliable audit trail (M10.9, M16) |
 
@@ -331,6 +332,15 @@ Reading by file name is coarse: sensitive content also turns up in test fixtures
 | Credential storage | Operating system credential store | Or the kernel keyring on headless Linux, or sign in each session (M18) |
 | HTTPS proxy and extra CA certificates | System settings | Often needed for self-hosted hosts and inspecting proxies. An inspecting proxy must exempt model endpoints or follow the logging rules (P11) |
 | Support details | None | Help channel or contact, and acceptable-use policy link, shown at startup and in errors |
+
+**M14.10 Policy versions.** The policy is delivered to every machine at once, but the harness is upgraded machine by machine, so for a while different versions of the harness read the same policy. Versioning keeps that safe:
+- **Each policy states its schema version.** Each harness release lists the schema versions it supports, in its release notes and in `hermit doctor` (S3).
+- **A newer policy than the harness understands stops it.** The harness never skips settings it doesn't recognize, because a skipped setting could be a restriction. A policy with an unsupported schema version, or an unknown setting, is invalid and stops the harness (M18.7). The error names the harness version needed.
+- **Upgrading the harness never loosens an existing policy.** A setting added in a new schema version takes, when the policy doesn't set it, the behavior the previous version had. Only the default path lists shipped with each release (M8.3) can change on upgrade, and they only add restrictions; release notes say what they add.
+- **Old schema versions stay supported** for at least 12 months after a newer one is released, so organizations can upgrade the harness before they change the policy.
+- **New schema versions only add settings.** Removing or changing the meaning of a setting needs a new major version of the harness, announced in advance.
+
+Because a policy the harness can't read stops it, the kill switch (section 12) works on every version: an old harness that doesn't understand a new policy stops just as a new one does on `enabled: false`.
 
 **M15. Reading test results.** The developer runs tests, in their IDE or terminal, as they normally would. The agent reads the results through a fixed, read-only action:
 - **M15.1 Standard reports.** The action reads JUnit XML reports, which most build tools write to a directory that is already gitignored (Maven `target/surefire-reports/`, Gradle `build/test-results/`, pytest `--junitxml`, JUnit reporters for Jest and Mocha). The results path is set in repository configuration the agent cannot edit, with defaults for common build tools.
@@ -614,6 +624,15 @@ To be agreed with leadership before a pilot:
 - **With a gateway:** turn access off for a user, a team or everyone at the gateway (M17). This takes effect on the next request.
 - **Without a gateway:** revoke the affected API keys or the Bedrock role, and push a policy with `enabled` set to false through device management. The harness refuses to start, and running sessions stop before their next model request, because the harness rechecks the policy before every request (M18). The slow part is delivery: device management can take minutes to hours to reach every machine, so revoking credentials is what takes effect at once.
 
+### Changing the policy
+
+A policy that uses a newer schema version stops every harness too old to read it (M14.10). So a change that needs a new schema version is rolled out in this order:
+1. Push the harness release that supports the new schema version to every machine.
+2. Optionally raise the policy's minimum harness version (M18.10) to that release, so machines that missed the upgrade stop with a clear message rather than run on.
+3. Push the policy that uses the new schema version.
+
+A change that stays within the current schema version, such as adding a protected path or a data class, needs no harness upgrade, and reaches each machine on its next policy recheck (M18.9).
+
 ### Runbook: restricted data was sent to the model
 
 1. **Find the affected sessions** in the audit log (M10, M16) by user, repository, time and scanning or refusal events. Investigators can search by path or term across sessions by unwrapping each session's hashing key (M10.5).
@@ -654,6 +673,7 @@ Illustrative only; the final format is settled during implementation. This examp
 
 ```json
 {
+  "schema_version": 1,
   "minimum_version": "1.0.0",
   "model": {
     "provider": "bedrock",

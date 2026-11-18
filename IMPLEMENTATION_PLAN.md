@@ -67,7 +67,11 @@ Other dependency rules, also checked in CI from milestone 0:
 
 **Parallel work.** Some milestones are independent (section 4). Run them as separate sessions in separate worktrees so their edits can't collide, and merge them one at a time.
 
-**When to stop and ask.** If the requirements turn out to be wrong, ambiguous or contradictory, the session writes its question to `QUESTION.md` and stops (the Stop hook allows this, milestone 0). Changes to REQUIREMENTS.md are made by a person, never as a side effect of implementing a milestone.
+**When to stop and ask.** If the requirements turn out to be wrong, ambiguous or contradictory, the session writes its question to `QUESTION.md` and stops (the Stop hook allows this, milestone 0). Changes to REQUIREMENTS.md are made by a person and approved by the project maintainer, never as a side effect of implementing a milestone.
+
+**The project maintainer** approves changes to REQUIREMENTS.md, answers questions in `QUESTION.md`, and makes the spike's judgement calls. The repository's `CODEOWNERS` file names the maintainer (milestone 0).
+
+**Requirements baselines.** Reviewed versions of REQUIREMENTS.md are tagged `spec-vX.Y`. Implementation starts from `spec-v0.1`. Each milestone records, in its pull request, the tag it was built against. An approved change to the requirements gets a new tag, and the milestones it affects are listed with it.
 
 ## 3. Milestones
 
@@ -84,7 +88,8 @@ Delivers:
 - CI and repository hardening, since this is a security product:
   - third-party actions pinned to commit hashes, not tags;
   - the automatic `GITHUB_TOKEN` limited to the permissions each workflow needs;
-  - `main` protected, with the `make check` jobs required and pull request review required;
+  - `main` protected: every change arrives by pull request, with the `make check` jobs required to pass. GitHub doesn't let authors approve their own pull requests, so while the project has one maintainer, the maintainer's review is recorded in the merge. Once there's a second maintainer, an approval from someone other than the author is required too, including from the code owner for REQUIREMENTS.md;
+  - a `CODEOWNERS` file naming the project maintainer for REQUIREMENTS.md, IMPLEMENTATION_PLAN.md, SECURITY.md, `.github/` and `.claude/`;
   - release tags signed;
   - GitHub's private vulnerability reporting turned on before the repository goes public, as `SECURITY.md` describes;
   - the code licensed under Apache-2.0 (`LICENSE`), and every dependency's license checked as compatible when it's added to the approved list.
@@ -143,7 +148,7 @@ Draft `CLAUDE.md`:
 
 # Decisions not in the code
 - REQUIREMENTS.md is the spec. Cite requirement IDs in commit messages and test names, down to the numbered part where there is one (M21.1 becomes M21_1 in a test name).
-- Never change REQUIREMENTS.md to match the code. Stop and ask instead.
+- Never change REQUIREMENTS.md to match the code. Stop and ask instead; the project maintainer approves every change to it.
 - Repository files only through internal/fsguard; local storage only through internal/localstore.
 - If a requirement is ambiguous or a test can't pass without changing the spec, write the question to QUESTION.md and stop.
 ```
@@ -201,13 +206,13 @@ Delivers: a minimal loop against the Claude API with the version 1 tool set (rea
 - the developer's rating, 1–5, of whether they'd use this instead of their usual tool for the task.
 
 **Decision rules:**
-- **Proceed as specified** if at least 5 of the 7 ordinary tasks (1–6 and 8) complete, and no other rule below triggers. With exactly 4, the owner of REQUIREMENTS.md decides, and the findings record why.
-- **Stop and revisit the constraints before milestone 1** if fewer than 4 of the ordinary tasks complete. The candidates to revisit are sandboxed agent-run tests and read-only history under M13's rules. The question goes to `QUESTION.md` for whoever owns REQUIREMENTS.md.
+- **Proceed as specified** if at least 5 of the 7 ordinary tasks (1–6 and 8) complete, and no other rule below triggers. With exactly 4, the project maintainer decides, and the findings record why.
+- **Stop and revisit the constraints before milestone 1** if fewer than 4 of the ordinary tasks complete. The candidates to revisit are sandboxed agent-run tests and read-only history under M13's rules. The question goes to `QUESTION.md` for the project maintainer.
 - **Raise agent-run tests as a requirements question** if the median number of developer test runs on task 1 exceeds 4.
 - **Revisit the M8 and M13 defaults** if protected files, ignored files or missing history block any of tasks 1–6 and 8. For the probes (7, 9 and 10), record whether the agent's alternative (a suggestion for the developer, or asking for a paste) was acceptable to the developer. If it wasn't for two or more of them, revisit the defaults too.
 - **Choose the edit format** with the lowest failure rate (open decision 9). If every format fails more than 10% of the time, the edit tool needs more design work before milestone 5.
 
-Checks: `docs/spike-findings.md` records every measure for every task, applies the decision rules as written, and has been read by whoever owns REQUIREMENTS.md. Findings that would change the requirements go to `QUESTION.md`, as for any milestone. None of the prototype's code is reused. The tasks become the first tasks of the evaluation suite (milestone 13).
+Checks: `docs/spike-findings.md` records every measure for every task, applies the decision rules as written, and has been read by the project maintainer. Findings that would change the requirements go to `QUESTION.md`, as for any milestone. None of the prototype's code is reused. The tasks become the first tasks of the evaluation suite (milestone 13).
 
 ### Milestone 1: Policy
 
@@ -223,6 +228,7 @@ Checks:
 - An unmatched repository gets the most restrictive ranked class. A repository with several remotes gets the most restrictive class among them, and URL rewriting in git configuration is applied before matching.
 - A changed policy file is picked up by the recheck; `enabled: false` stops the next request.
 - The example policy in REQUIREMENTS.md validates.
+- Policy versions (M14.10): a policy with a newer schema version than the harness supports, or with an unknown setting, stops the harness with an error naming the harness version needed. A policy with an older supported schema version loads, and every setting added since then takes the previous version's behavior. A CI check compares the policy schema generated from the Go types with a committed snapshot, and fails if the schema changes without a new schema version.
 
 ### Milestone 2: Credentials, local storage and network client
 
@@ -439,7 +445,7 @@ Requirements: M18.3, M18.4, M18.11 and M18.12 (one executable, packages, reprodu
 
 Delivers: reproducible builds, signed and notarized macOS package, signed MSI, deb and rpm, SBOM and build provenance, FIPS build, MDM profile and ADMX templates, documented organization signing.
 
-Checks: two independent builds produce identical executables; packages install and uninstall cleanly on each OS; uninstall, or the device-management script where the package format has no uninstall step (macOS), runs `hermit purge` for each user and leaves nothing readable (M10.15); developer packages contain `hermit` only, not `cmd/hermit-audit`, which ships separately for the organization's own infrastructure.
+Checks: two independent builds produce identical executables; each release's notes list the policy schema versions it supports, and any additions to the default path lists (M14.10); packages install and uninstall cleanly on each OS; uninstall, or the device-management script where the package format has no uninstall step (macOS), runs `hermit purge` for each user and leaves nothing readable (M10.15); developer packages contain `hermit` only, not `cmd/hermit-audit`, which ships separately for the organization's own infrastructure.
 
 ### Milestone 13: Evaluation suite
 
@@ -524,6 +530,7 @@ For the other requirements divided into numbered parts, each milestone's "Requir
 | | | M14.7 Reading, writing and scanning | 1, 3, 4, 5 |
 | | | M14.8 Review and source control | 6, 9 |
 | | | M14.9 Installation and operations | 1, 2, 11 |
+| | | M14.10 Policy versions | 1, 11 (`hermit doctor`), 12 (release notes) |
 
 Prerequisites P1–P12 are organizational. Milestone 14's documentation covers them, and milestone 8 supplies AWS templates for P5. P10, the independent penetration test, happens after milestone 12 and before any production pilot. P12, application allowlisting, is optional; milestone 12's signed packages and documented organization signing are what it relies on.
 
