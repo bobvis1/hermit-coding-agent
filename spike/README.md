@@ -2,7 +2,7 @@
 
 The prototype for the spike in IMPLEMENTATION_PLAN.md: a minimal agent loop against the Claude API with Hermit's version 1 tools, to find out whether an agent this constrained is still worth using. It lives only on the `spike` branch and never merges into `main`. None of its code is reused.
 
-Run it only on the spike's public repositories.
+Run it only on the spike's public repositories. How sessions run and how results are judged is in [PROTOCOL.md](PROTOCOL.md).
 
 ## Build
 
