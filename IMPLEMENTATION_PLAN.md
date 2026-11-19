@@ -90,13 +90,13 @@ Delivers:
 - Go module pinned to Go 1.25 or later, in `go.mod` and in CI. `fsguard` needs `os.Root.Rename` for atomic writes inside the root, and the hostile tests need `os.Root.Link` to create hard links; both arrived in Go 1.25. (Go's FIPS mode, mentioned in M18, has been available since 1.24, so 1.25 covers both.)
 - Package layout from section 1, `Makefile` with `make check` (format check, `go vet`, `staticcheck`, unit tests, the dependency-rule checks, including the process check over every linked package) and `make fuzz`.
 - `scripts/review-diff.sh` for the review step in section 2.
-- The approved list of third-party code (below), enforced by a CI check on `go.mod`.
+- The approved list of third-party code (below), kept machine-readable with each module's license in `deps/approved-modules.txt` and enforced by a CI check on `go.mod`.
 - CI on GitHub Actions running `make check` on GitHub's hosted macOS, Windows and Linux runners (S4 requires all three). The repository becomes public at this point, since hosted runners are free for public repositories, and organizations auditing "build from source" (M18) need to see the source. Before it does, check the history and documents for anything that shouldn't be published.
 - CI and repository hardening, since this is a security product:
   - third-party actions pinned to commit hashes, not tags;
   - the automatic `GITHUB_TOKEN` limited to the permissions each workflow needs;
   - `main` protected: every change arrives by pull request, with the `make check` jobs required to pass. GitHub doesn't let authors approve their own pull requests, so while the project has one maintainer, the maintainer's review is recorded in the merge. Once there's a second maintainer, an approval from someone other than the author is required too, including from the code owner for REQUIREMENTS.md;
-  - a `CODEOWNERS` file naming the project maintainer for REQUIREMENTS.md, IMPLEMENTATION_PLAN.md, SECURITY.md, `.github/` and `.claude/`;
+  - a `CODEOWNERS` file naming the project maintainer for REQUIREMENTS.md, IMPLEMENTATION_PLAN.md, SECURITY.md, `CLAUDE.md`, `.github/` and `.claude/`, and for the checks themselves (`Makefile`, `scripts/`, `tools/`, `deps/`);
   - release tags signed;
   - GitHub's private vulnerability reporting turned on before the repository goes public, as `SECURITY.md` describes;
   - the code licensed under Apache-2.0 (`LICENSE`), and every dependency's license checked as compatible when it's added to the approved list.
@@ -107,7 +107,7 @@ Delivers:
   - `.gitignore` entries for `review/` and `QUESTION.md`;
   - `.claude/rules/security-core.md` with `paths:` set to the security packages, holding the conventions for that code (below).
 
-**Approved third-party code.** The standard library comes first. Anything else is on this list, vendored so that every change to it appears in the review diff, and checked by `govulncheck` in `make check`. Development-only tools, such as `staticcheck`, live in a separate module, so they are never linked into `hermit`. Adding to the list goes through `QUESTION.md`.
+**Approved third-party code.** The standard library comes first. Anything else is on this list, vendored so that every change to it appears in the review diff, and checked by `govulncheck` in `make check`. Development-only tools, such as `staticcheck` and the dependency-rule checker, live in a separate module (`tools/`), so they are never linked into `hermit`; that module may need a newer Go than `hermit` itself. Adding to the list goes through `QUESTION.md`.
 
 | Need | Approved | Conditions |
 |---|---|---|
@@ -135,7 +135,7 @@ Not used:
 The guarantee that every model-bound message passed through `scan` is unaffected, because it is enforced at Hermit's provider interface, before any SDK sees the message.
 
 **The Stop hook** (`scripts/stop-check.sh`) blocks the agent from finishing while `make check` fails, with two exceptions:
-- **No Go changes:** if no `.go` files, `go.mod`, `go.sum`, test fixtures or the `Makefile` changed in the working tree, it allows the stop, so documentation-only sessions aren't held up.
+- **No Go changes:** if no `.go` files, `go.mod`, `go.sum`, test fixtures, the `Makefile`, or the files the checks read (`scripts/`, `deps/`, `.github/`) changed in the working tree, it allows the stop, so documentation-only sessions aren't held up.
 - **A question is pending:** if `QUESTION.md` exists, it allows the stop and shows the question to the developer. This is how "stop and ask" (section 2) works when the requirements are ambiguous. The developer answers, deletes the file and resumes the session.
 
 A `SessionStart` hook, limited to the `startup|resume` matcher so it doesn't fire when a session is compacted or cleared partway through, keeps the question file from turning the Stop hook off for good. At the start of a session it renames any existing `QUESTION.md` to `QUESTION.unanswered-<date>.md` and warns the developer. So a `QUESTION.md` that the Stop hook sees was always written in the current session.

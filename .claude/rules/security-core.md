@@ -1,0 +1,14 @@
+---
+paths:
+  - "internal/policy/**"
+  - "internal/credstore/**"
+  - "internal/localstore/**"
+  - "internal/netclient/**"
+  - "internal/fsguard/**"
+  - "internal/scan/**"
+  - "internal/render/**"
+---
+- Fail closed: any error or unknown case refuses, never allows.
+- Every rule needs a test for the allowed case and the refused case.
+- Name hostile tests after the requirement part and case, for example TestM21_1_SymlinkToSSH for M21.1.
+- No dependencies beyond the approved list (deps/approved-modules.txt, from IMPLEMENTATION_PLAN.md, milestone 0) without asking.

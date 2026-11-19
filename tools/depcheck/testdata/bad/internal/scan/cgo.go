@@ -1,0 +1,3 @@
+package scan
+
+import "C"

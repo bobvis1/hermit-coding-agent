@@ -1,0 +1,60 @@
+# make check on GitHub's hosted macOS, Windows and Linux runners
+# (IMPLEMENTATION_PLAN.md, milestone 0; S4 requires all three). Branch
+# protection on main requires the three "make check" jobs to pass.
+#
+# Every action is pinned to a commit hash; `make check` (pincheck) fails on a
+# tag or branch. The token gets read access to the code and nothing else.
+name: check
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions: {}
+
+concurrency:
+  group: check-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GO_VERSION: "1.27.4" # keep in step with the toolchain line in go.mod
+
+jobs:
+  check:
+    name: make check (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: false # no shared build cache between pull requests and main
+      - run: make --version
+      - run: make check
+
+  fuzz:
+    name: make fuzz
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: false
+      - run: make fuzz FUZZTIME=30s
