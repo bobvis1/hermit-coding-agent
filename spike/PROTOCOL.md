@@ -14,13 +14,15 @@ Status: draft. It is frozen once the project maintainer confirms it. Any change 
 
 ## Repositories
 
-The plan's criteria apply: three public open-source repositories, one each for Java (Maven or Gradle), Python (pytest) and TypeScript (Jest). Each has 10,000–100,000 lines, passing tests that write JUnit XML reports, and nothing sensitive.
+The plan's criteria apply. There are three repositories, one each for Java (Maven or Gradle), Python (pytest) and TypeScript (Jest), each with 10,000–100,000 lines and passing tests that write JUnit XML reports. They are either public open-source repositories with nothing sensitive, or repositories an organization owns, used under the plan's conditions. The steps below marked *organization's repositories* apply only to the second kind.
 
 For each repository, before any session:
-1. Pin a commit. Every session on that repository starts from a clean clone at that commit, plus the task's prepared branch, if it has one.
-2. Run the full test suite with JUnit XML reports turned on. Check that the tests pass, that the reports land where `read_test_results` finds them (or note the `-reports` glob to use), and record how long the run takes.
-3. Check for anything sensitive: credentials in tracked files, internal hostnames, personal data. The spike hides secrets files by name only and doesn't scan file contents, so anything found here rules the repository out.
-4. Give it a code (A, B or C). The findings use the code; the instantiation sheet maps codes to repositories.
+1. *Organization's repositories:* record on the instantiation sheet the organization's written approval: the API account it covers, the P4 terms it confirmed, and whether it approved prompt caching and the server-side fallback. Any feature it didn't approve is turned off for every session.
+2. Pin a commit. Every session on that repository starts from a clean clone at that commit, plus the task's prepared branch, if it has one.
+3. Run the full test suite with JUnit XML reports turned on. Check that the tests pass, that the reports land where `read_test_results` finds them (or note the `-reports` glob to use), and record how long the run takes.
+4. Check for anything sensitive: credentials in files, internal hostnames, personal data. The spike hides secrets files by name only and doesn't scan file contents. For a public repository, anything found rules it out.
+5. *Organization's repositories:* after the tests have run, run a secret scanner over the working tree the sessions will use, tracked and untracked files, test reports included. Use the scanner the organization uses, or else an open-source one such as gitleaks in directory mode. The repository is used only if the scanner finds nothing, or if everything it finds is removed from that working tree. Rerun the scanner on each prepared branch. Record the scanner, its version and the result on the instantiation sheet.
+6. Give it a code (A, B or C). The findings use the code; the instantiation sheet maps codes to repositories.
 
 ## Tasks
 
@@ -76,7 +78,7 @@ Participants work through the repositories in a rotated order (A, B, C; then B, 
 
 ## Running a session
 
-1. **Briefing.** Each participant gets the same short briefing once, before their first session: what the agent can and can't do, how to run the tests with reports, and the commands (`/stats`, `/done`, Ctrl-C). Nobody coaches them on how to write prompts.
+1. **Briefing.** Each participant gets the same short briefing once, before their first session: what the agent can and can't do, how to run the tests with reports, and the commands (`/stats`, `/done`, Ctrl-C). On an organization's repositories, the briefing also says to paste nothing from production systems: no production logs, data or credentials. Nobody coaches them on how to write prompts.
 2. **Setup.** Start from a clean clone at the pinned commit. Check out the prepared branch if there is one, and check that `git status` is clean.
 3. **Start.** Run the spike with `-task`, `-who` (the participant's code), `-format` (from the rotation) and `-task-file`. The facilitator notes the start time.
 4. **Work.** The participant works as they would with their usual tool: they reply to the agent, run tests when they choose, and paste anything the agent asks for, if they're willing to. Each test run is tallied on the sheet. The facilitator steps in only for technical problems, such as a crash or an API error, and records any intervention.
@@ -129,6 +131,13 @@ The findings record every measure for every session, the per-task results, and e
 - The instantiation sheet, the recording sheets and the saved diffs stay off-repo.
 - The findings in `docs/spike-findings.md` use repository and participant codes, and contain no task text or code beyond what's needed to explain a result.
 - The API key comes from each participant's own secret store, through `HERMIT_SPIKE_ANTHROPIC_KEY` at launch only. It is never written to a file or pasted into a session.
+
+For an organization's repositories, these also apply:
+- Sessions use only the API account the organization's approval covers.
+- Participants are people already allowed to read the repositories, working on machines the organization manages.
+- Logs, saved diffs and both sheets are confidential to the organization and stay on its machines or storage. They are deleted 30 days after the project maintainer has read the findings, unless the organization's retention rules say otherwise. The facilitator records the deletion date.
+- The findings name no repository or organization and contain no task text, code or file paths. The organization reads them before they're committed.
+- The tasks stay with the organization. Milestone 13's evaluation suite gets tasks of the same ten types on public repositories instead.
 
 ## Dry run
 
