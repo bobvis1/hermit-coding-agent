@@ -1,0 +1,2 @@
+# LF everywhere, so gofmt and the scripts behave the same on Windows runners.
+* text=auto eol=lf

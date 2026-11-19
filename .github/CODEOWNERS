@@ -1,0 +1,13 @@
+# The project maintainer reviews every change to the specification, the plan,
+# the security policy, CI, the development guardrails and the checks
+# themselves (IMPLEMENTATION_PLAN.md, milestone 0).
+/REQUIREMENTS.md        @bobvis1
+/IMPLEMENTATION_PLAN.md @bobvis1
+/SECURITY.md            @bobvis1
+/CLAUDE.md              @bobvis1
+/.github/               @bobvis1
+/.claude/               @bobvis1
+/Makefile               @bobvis1
+/scripts/               @bobvis1
+/tools/                 @bobvis1
+/deps/                  @bobvis1

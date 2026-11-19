@@ -1,0 +1,12 @@
+# Development tools built by make (Makefile).
+/bin/
+
+# The review diff for the spec-reviewer (scripts/review-diff.sh).
+/review/
+
+# Questions for the project maintainer; see IMPLEMENTATION_PLAN.md, section 2.
+/QUESTION.md
+/QUESTION.unanswered-*.md
+
+# Personal Claude Code settings.
+/.claude/settings.local.json

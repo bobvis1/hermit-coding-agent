@@ -1,0 +1,29 @@
+# Approved third-party modules for the hermit module (IMPLEMENTATION_PLAN.md,
+# milestone 0, "Approved third-party code"). `make check` fails if go.mod
+# requires a module that isn't listed here, directly or indirectly.
+#
+# Format: module path, SPDX license, then optional notes after " -- ".
+# Adding a module goes through QUESTION.md and the project maintainer, and its
+# license must be compatible with Apache-2.0. Modules a listed one depends on
+# need their own line when they are added.
+
+golang.org/x/sys     BSD-3-Clause  -- system calls: credential stores, Windows APIs, socket tables
+golang.org/x/text    BSD-3-Clause  -- Unicode normalization for path matching (M21)
+golang.org/x/term    BSD-3-Clause  -- raw terminal mode
+
+# AWS SDK for Go v2: core packages and only the service clients Hermit needs.
+# Never the config module or credentials/processcreds (depcheck refuses both).
+github.com/aws/aws-sdk-go-v2                          Apache-2.0
+github.com/aws/smithy-go                              Apache-2.0
+github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream Apache-2.0
+github.com/aws/aws-sdk-go-v2/internal/configsources   Apache-2.0
+github.com/aws/aws-sdk-go-v2/internal/endpoints/v2    Apache-2.0
+github.com/aws/aws-sdk-go-v2/service/bedrockruntime   Apache-2.0
+github.com/aws/aws-sdk-go-v2/service/s3               Apache-2.0
+github.com/aws/aws-sdk-go-v2/service/kms              Apache-2.0
+github.com/aws/aws-sdk-go-v2/service/sso              Apache-2.0
+github.com/aws/aws-sdk-go-v2/service/ssooidc          Apache-2.0
+
+github.com/anthropics/anthropic-sdk-go  MIT  -- see "Model provider SDKs" in IMPLEMENTATION_PLAN.md
+
+github.com/ebitengine/purego  Apache-2.0  -- macOS Keychain and socket owners only (open decisions 5 and 8)
