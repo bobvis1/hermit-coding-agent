@@ -187,7 +187,13 @@ Goal 2 makes usefulness a security requirement, and nothing else in the plan tes
 
 Delivers: a minimal loop against the Claude API with the version 1 tool set (read, search, list, edit, read test results), with the protected and unreadable paths approximated, and with each candidate edit format from open decision 9 available. The tasks, measures and decision rules below are fixed before the spike runs, so the results can't be read to fit a conclusion afterwards. The findings go in `docs/spike-findings.md`.
 
-**Repositories.** Three public open-source repositories, one each for Java (Maven or Gradle), Python (pytest) and TypeScript (Jest). Each has 10,000–100,000 lines, passing tests that write JUnit XML reports, and nothing sensitive.
+**Repositories.** Three repositories, one each for Java (Maven or Gradle), Python (pytest) and TypeScript (Jest). Each has 10,000–100,000 lines and passing tests that write JUnit XML reports. They are either public open-source repositories with nothing sensitive, or repositories an organization owns, used under the conditions below. The conditions exist because the prototype only approximates Hermit's protections: it hides secrets files by name but doesn't scan file contents, and it sends what it reads to the Claude API.
+- The owning organization approves, in writing, sending the repositories' code to the Claude API under the terms of the account whose key the sessions use. Before approving, it confirms what P4 lists for any provider. It also approves the API features the prototype uses: prompt caching, and the server-side fallback, which can re-send a declined request to another Claude model. Any feature it doesn't approve is turned off.
+- The repositories hold nothing the organization would place in a restricted data class (M23): no personal or health data, no export-controlled code, nothing under a regulator's rules.
+- Before any session, a secret scanner runs over the files in the working tree the sessions use, tracked and untracked. A repository is used only if the scanner finds nothing, or if everything it finds is removed from that working tree.
+- Participants are people already allowed to read the repositories. They work on machines the organization manages, and they paste nothing from production systems.
+- Session logs, saved diffs, and the task and recording sheets stay with the organization. They are deleted 30 days after the project maintainer has read the findings, unless the organization's retention rules say otherwise.
+- `docs/spike-findings.md` names no repository or organization and contains no task text or code. The organization reads the findings before they're committed.
 
 **Tasks.** Ten tasks, spread across the three repositories. Tasks 7, 9 and 10 are probes, designed to hit Hermit's constraints:
 1. Fix a failing test caused by a bug seeded for the purpose.
@@ -219,7 +225,7 @@ Delivers: a minimal loop against the Claude API with the version 1 tool set (rea
 - **Revisit the M8 and M13 defaults** if protected files, ignored files or missing history block any of tasks 1–6 and 8. For the probes (7, 9 and 10), record whether the agent's alternative (a suggestion for the developer, or asking for a paste) was acceptable to the developer. If it wasn't for two or more of them, revisit the defaults too.
 - **Choose the edit format** with the lowest failure rate (open decision 9). If every format fails more than 10% of the time, the edit tool needs more design work before milestone 5.
 
-Checks: `docs/spike-findings.md` records every measure for every task, applies the decision rules as written, and has been read by the project maintainer. Findings that would change the requirements go to `QUESTION.md`, as for any milestone. None of the prototype's code is reused. The tasks become the first tasks of the evaluation suite (milestone 13).
+Checks: `docs/spike-findings.md` records every measure for every task, applies the decision rules as written, and has been read by the project maintainer. Findings that would change the requirements go to `QUESTION.md`, as for any milestone. None of the prototype's code is reused. If the spike ran on public repositories, its tasks become the first tasks of the evaluation suite (milestone 13). If it ran on an organization's repositories, its tasks stay with that organization, and the evaluation suite gets tasks of the same ten types on public repositories instead.
 
 ### Milestone 1: Policy
 
@@ -494,7 +500,7 @@ Checks: a reviewer who did not build Hermit can install and configure it from th
 | 13 Evaluation suite | 5, 7 | 8–12 |
 | 14 Validation and documentation | 12, 13 | — |
 
-- **Critical path:** policy, then credentials and local storage, then the agent loop, with the file access guard and scanning and rendering built alongside. The loop is where every model-bound message passes, so nothing in the product that talks to a model is built before `fsguard`, `scan`, `render` and `localstore` exist. The spike is the exception: it is thrown away, never merged, and runs only on repositories with no sensitive data.
+- **Critical path:** policy, then credentials and local storage, then the agent loop, with the file access guard and scanning and rendering built alongside. The loop is where every model-bound message passes, so nothing in the product that talks to a model is built before `fsguard`, `scan`, `render` and `localstore` exist. The spike is the exception: it is thrown away, never merged, and runs only on public repositories with nothing sensitive, or on an organization's repositories under the conditions in the spike's section.
 - **Parallel tracks:** milestones 3 and 4 import nothing else from Hermit, so they can start straight after milestone 0 and run alongside 1 and 2. The walking skeleton and milestones 6, 7, 8 and 9 can run at the same time. Milestone 10 waits for 6 and 9: it checks freshness against snapshots and summarizes CI results retrieved through `scm`.
 - **First usable build:** the walking skeleton, straight after milestone 5. Dogfooding from that point surfaces usability problems early (M11), while the spike has already answered whether the constrained agent is worth building at all.
 
